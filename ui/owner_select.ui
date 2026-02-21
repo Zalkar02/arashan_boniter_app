@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>OwnerSelect</class>
+ <widget class="QMainWindow" name="OwnerSelect">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>1000</width>
+    <height>700</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>Выбор хозяйства</string>
+  </property>
+  <widget class="QWidget" name="centralwidget">
+   <layout class="QVBoxLayout" name="verticalLayout">
+
+    <item>
+     <widget class="QLineEdit" name="input_search">
+      <property name="placeholderText">
+       <string>Введите имя или телефон владельца</string>
+      </property>
+     </widget>
+    </item>
+
+    <item>
+     <widget class="QPushButton" name="btn_search">
+      <property name="text">
+       <string>🔍 Найти</string>
+      </property>
+     </widget>
+    </item>
+
+    <item>
+     <widget class="QListWidget" name="list_owners"/>
+    </item>
+
+    <item>
+     <widget class="QPushButton" name="btn_add_owner">
+      <property name="text">
+       <string>➕ Добавить нового</string>
+      </property>
+     </widget>
+    </item>
+
+    <item>
+     <widget class="QPushButton" name="btn_continue">
+      <property name="text">
+       <string>✅ Продолжить</string>
+      </property>
+     </widget>
+    </item>
+
+   </layout>
+  </widget>
+  <resources/>
+  <connections/>
+ </widget>
+</ui>
+

@@ -1,0 +1,41 @@
+/* Светлая тема для PyQt5 */
+
+QWidget {
+    background-color: #FFFFFF;
+    color: #000000;
+    font-size: 16px;
+    font-family: DejaVu Sans, Arial, sans-serif;
+}
+
+QPushButton {
+    background-color: #E0E0E0;
+    border: 1px solid #888;
+    border-radius: 5px;
+    padding: 8px 12px;
+    font-weight: bold;
+}
+
+QPushButton:hover {
+    background-color: #D0D0D0;
+    border: 1px solid #555;
+}
+
+QLineEdit, QComboBox, QTextEdit {
+    background-color: #FFFFFF;
+    border: 1px solid #999;
+    padding: 6px;
+    border-radius: 4px;
+}
+
+QListWidget, QTableWidget {
+    background-color: #FAFAFA;
+    border: 1px solid #CCC;
+    font-size: 15px;
+}
+
+QHeaderView::section {
+    background-color: #F0F0F0;
+    padding: 5px;
+    border: 1px solid #CCC;
+    font-weight: bold;
+}

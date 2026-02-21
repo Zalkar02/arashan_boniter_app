@@ -1,0 +1,39 @@
+.
+├── app.py
+├── db
+│   ├── __init__.py
+│   ├── models.py
+│   └── __pycache__
+│       ├── __init__.cpython-312.pyc
+│       └── models.cpython-312.pyc
+├── last_sync.txt
+├── main_menu.py
+├── migrate_users_add_cols.py
+├── owner_create.py
+├── owner_select.py
+├── passport_baran_onepage.pdf
+├── print
+├── __pycache__
+│   ├── main_menu.cpython-312.pyc
+│   ├── owner_create.cpython-312.pyc
+│   └── owner_select.cpython-312.pyc
+├── sheep_local.db
+├── styles
+│   └── light_theme.qss
+├── sync
+│   ├── __init__.py
+│   ├── __pycache__
+│   │   ├── __init__.cpython-312.pyc
+│   │   └── sync.cpython-312.pyc
+│   └── sync.py
+├── test_create_sheep.py
+├── test.py
+├── tree.txt
+└── ui
+    ├── main_menu.ui
+    ├── main_menu_ui.py
+    ├── owner_select.ui
+    ├── owner_select_ui.py
+    └── __pycache__
+        ├── main_menu_ui.cpython-312.pyc
+        └── owner_select_ui.cpython-312.pyc
