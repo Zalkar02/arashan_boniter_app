@@ -29,6 +29,7 @@ from services.passport_print_service import (
     get_print_batch_size,
     print_pdf_page_range,
     save_pending_print_job,
+    generate_passports_pdf,
 )
 from services.payment_service import create_payment, refresh_payment_statuses
 from services.sheep_service import soft_delete_sheep_record
