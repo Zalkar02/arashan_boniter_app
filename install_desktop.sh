@@ -5,7 +5,7 @@ PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="Arashan Boniter"
 DESKTOP_FILENAME="arashan-boniter.desktop"
 APPLICATIONS_DIR="$HOME/.local/share/applications"
-DESKTOP_DIR="$HOME/Desktop"
+DESKTOP_DIR="$(xdg-user-dir DESKTOP 2>/dev/null || echo "$HOME/Desktop")"
 RUN_SCRIPT="$PROJECT_DIR/run.sh"
 ICON_PATH="$PROJECT_DIR/assets/app_icon.svg"
 
