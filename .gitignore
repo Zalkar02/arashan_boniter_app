@@ -8,6 +8,7 @@ media/
 
 # Backup files # 
 *.bak 
+.codex
 
 # If you are using PyCharm # 
 # User-specific stuff
@@ -48,6 +49,7 @@ atlassian-ide-plugin.xml
 # Python # 
 *.py[cod] 
 *$py.class 
+.codex
 
 # Distribution / packaging 
 .Python build/ 
@@ -67,6 +69,7 @@ wheels/
 *.egg 
 *.manifest 
 *.spec 
+!arashan_boniter.spec
 
 # Installer logs 
 pip-log.txt 
@@ -97,7 +100,7 @@ celerybeat-schedule.*
 *.sage.py 
 
 # Environments 
-.env 
+# .env 
 .venv 
 env/ 
 venv/ 
@@ -135,3 +138,6 @@ GitHub.sublime-settings
 !.vscode/launch.json 
 !.vscode/extensions.json 
 .history
+.app_state/tokens.json
+.app_state/user.json
+.app_state/exports/

@@ -4,10 +4,14 @@ from PyQt5.QtWidgets import (
     QPushButton, QHBoxLayout, QMessageBox
 )
 from PyQt5.QtCore import Qt
+from auth_state import AuthState
+
+from services.db_service import get_db
+from services.owner_service import create_owner, owner_exists_by_username, update_owner
 
 try:
-    from db.models import init_db, User
-    db = init_db()
+    from db.models import User
+    db = get_db()
 except Exception as e:
     db = None
     User = None
@@ -128,9 +132,10 @@ AREA_TO_REGION = {
 
 
 class OwnerCreateDialog(QDialog):
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, owner=None):
         super().__init__(parent)
-        self.setWindowTitle("Создать владельца")
+        self.owner = owner
+        self.setWindowTitle("Редактировать владельца" if owner is not None else "Создать владельца")
         self.resize(500, 450)
         self.setModal(True)
         self.created_id = None
@@ -172,6 +177,9 @@ class OwnerCreateDialog(QDialog):
         self.btn_save = QPushButton("Сохранить"); self.btn_save.clicked.connect(self._save)
         row.addStretch(1); row.addWidget(self.btn_cancel); row.addWidget(self.btn_save)
 
+        if self.owner is not None:
+            self._fill_owner_data()
+
     def _save(self):
         if db is None or User is None:
             QMessageBox.critical(self, "БД", f"База недоступна.\n{_db_error or ''}")
@@ -181,31 +189,50 @@ class OwnerCreateDialog(QDialog):
         if not self._validate():
             return
 
-        username = self.ed_username.text().strip()
-        password = self.ed_password.text().strip()
-        name = self.ed_name.text().strip()
-        
         self._ensure_area_valid_for_region()
-
-        u = User()
-        u.username = username
-        u.password = password   # ⚠️ пока в чистом виде; для реального проекта нужно хэшировать!
-        u.name = name
-        u.phone = self.ed_phone.text().strip()
-        u.region = self.cb_region.currentData()
-        u.area = self.cb_area.currentData()
-        u.city = self.ed_city.text().strip()
-        u.home = self.ed_home.text().strip()
+        payload = {
+            "created_by_user_id": (AuthState.user or {}).get("id"),
+            "username": self.ed_username.text().strip(),
+            "password": self.ed_password.text().strip(),   # ⚠️ пока в чистом виде; для реального проекта нужно хэшировать!
+            "name": self.ed_name.text().strip(),
+            "phone": self.ed_phone.text().strip(),
+            "region": self.cb_region.currentData(),
+            "area": self.cb_area.currentData(),
+            "city": self.ed_city.text().strip(),
+            "home": self.ed_home.text().strip(),
+        }
 
         try:
-            db.add(u)
-            db.commit()
-            self.created_id = u.id
-            QMessageBox.information(self, "Готово", "Владелец создан")
+            if self.owner is None:
+                owner = create_owner(db, payload)
+            else:
+                owner = update_owner(db, self.owner, payload)
+            self.created_id = owner.id
+            QMessageBox.information(self, "Готово", "Владелец сохранён")
             self.accept()
         except Exception as e:
             db.rollback()
             QMessageBox.critical(self, "Ошибка БД", str(e))
+
+    def _fill_owner_data(self):
+        self.ed_username.setText(self.owner.username or "")
+        self.ed_password.setText(self.owner.password or "")
+        self.ed_name.setText(self.owner.name or "")
+        self.ed_phone.setText(self.owner.phone or "")
+        self.ed_city.setText(self.owner.city or "")
+        self.ed_home.setText(self.owner.home or "")
+
+        if self.owner.region is not None:
+            for i in range(self.cb_region.count()):
+                if self.cb_region.itemData(i) == self.owner.region:
+                    self.cb_region.setCurrentIndex(i)
+                    break
+        self._refill_areas_for_region(self.cb_region.currentData())
+        if self.owner.area is not None:
+            for i in range(self.cb_area.count()):
+                if self.cb_area.itemData(i) == self.owner.area:
+                    self.cb_area.setCurrentIndex(i)
+                    break
         
     def _refill_areas_for_region(self, region_code):
         """Пересобирает список районов под выбранную область."""
@@ -236,44 +263,64 @@ class OwnerCreateDialog(QDialog):
         if AREA_TO_REGION.get(area_code) != region_code:
             self.cb_area.setCurrentIndex(0)
     
-    def _validate(self) -> bool:
-        if db is None or User is None:
-            QMessageBox.critical(self, "БД", f"База недоступна.\n{_db_error or ''}")
-            return False
-
+    def _validate_username(self) -> bool:
         username = self.ed_username.text().strip()
-        password = self.ed_password.text()
-        name = self.ed_name.text().strip()
-
         if not username:
             QMessageBox.warning(self, "Ошибка", "Заполните логин")
-            self.ed_username.setFocus(); return False
+            self.ed_username.setFocus()
+            return False
 
-        if db.query(User).filter_by(username=username).first():
+        if owner_exists_by_username(db, username) and (self.owner is None or self.owner.username != username):
             QMessageBox.warning(self, "Ошибка", "Такой логин уже есть")
-            self.ed_username.setFocus(); return False
+            self.ed_username.setFocus()
+            return False
+        return True
 
+    def _validate_password(self) -> bool:
+        password = self.ed_password.text()
         if not password or len(password) < 6:
             QMessageBox.warning(self, "Ошибка", "Пароль должен быть не короче 6 символов")
-            self.ed_password.setFocus(); return False
+            self.ed_password.setFocus()
+            return False
+        return True
 
+    def _validate_name(self) -> bool:
+        name = self.ed_name.text().strip()
         if not name:
             QMessageBox.warning(self, "Ошибка", "Заполните ФИО")
-            self.ed_name.setFocus(); return False
+            self.ed_name.setFocus()
+            return False
+        return True
 
+    def _validate_region_area(self) -> bool:
         if hasattr(self, "_ensure_area_valid_for_region"):
             self._ensure_area_valid_for_region()
 
         region_code = self.cb_region.currentData()
         if region_code is None:
             QMessageBox.warning(self, "Ошибка", "Выберите область")
-            self.cb_region.setFocus(); return False
+            self.cb_region.setFocus()
+            return False
 
         area_code = self.cb_area.currentData()
         if area_code is None:
             QMessageBox.warning(self, "Ошибка", "Выберите район")
-            self.cb_area.setFocus(); return False
-
+            self.cb_area.setFocus()
+            return False
         return True
 
+    def _validate(self) -> bool:
+        if db is None or User is None:
+            QMessageBox.critical(self, "БД", f"База недоступна.\n{_db_error or ''}")
+            return False
 
+        if not self._validate_username():
+            return False
+        if not self._validate_password():
+            return False
+        if not self._validate_name():
+            return False
+        if not self._validate_region_area():
+            return False
+
+        return True

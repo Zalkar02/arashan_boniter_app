@@ -1,4 +1,4 @@
-#!/home/zuko/Projects/Python/boniter_arashan/env/bin/python3.12
+#!/home/zuko/Projects/Python/arashan_boniter_app/env/bin/python3.13
 # -*- coding: utf-8 -*-
 import re
 import sys

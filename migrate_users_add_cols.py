@@ -1,8 +1,8 @@
 # migrate_users_add_cols.py — одноразовая миграция для SQLite (users)
 from sqlalchemy import create_engine, text
+from state_paths import ensure_db_path
 
-# 👉 если у тебя путь другой — поправь:
-DB_URL = "sqlite:///sheep_local.db"
+DB_URL = f"sqlite:///{ensure_db_path()}"
 
 NEEDED_COLS = {
     "password": "VARCHAR",

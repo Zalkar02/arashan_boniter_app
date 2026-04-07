@@ -5,14 +5,16 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QPalette, QColor, QKeySequence
-import json, os, requests
 
-from auth_state import AuthState
+from api_config import build_api_url
 from main_menu import MainMenu
+from services.auth_service import login_user
+from services.db_service import get_db
+from services.guest_records_service import claim_guest_records
 
 try:
-    from db.models import init_db, User
-    db = init_db()
+    from db.models import User
+    db = get_db()
 except Exception as e:
     db = None
     User = None
@@ -61,43 +63,31 @@ class LoginWindow(QMainWindow):
         self.btn_login.clicked.connect(self._login)
 
     def _login(self):
-        TOKEN_URL = "https://arashan.zet.kg/api/token/"
-        ME_URL = "https://arashan.zet.kg/api/users/me/"
-        TOKEN_FILE = "tokens.json"
-        USER_FILE = "user.json"
+        token_url = build_api_url("/api/token/")
+        me_url = build_api_url("/api/users/me/")
         username = self.ed_username.text().strip()
         password = self.ed_password.text()
         if not username or not password:
             QMessageBox.warning(self, "Ошибка", "Введите логин и пароль")
             return
         try:
-            r = requests.post(TOKEN_URL, json={"username": username, "password": password}, timeout=10)
+            login_user(token_url, me_url, username, password)
         except Exception as e:
-            QMessageBox.warning(self, "Ошибка", f"Сервер недоступен: {e}")
+            QMessageBox.warning(self, "Ошибка", str(e))
             return
-        if r.status_code != 200:
-            QMessageBox.warning(self, "Ошибка", "Неверный логин или пароль")
-            return
-        data = r.json()
-        access = data.get("access")
-        refresh = data.get("refresh")
-        if not access or not refresh:
-            QMessageBox.warning(self, "Ошибка", "Не удалось получить токены")
-            return
-        AuthState.access = access
-        AuthState.refresh = refresh
-        # загрузить профиль пользователя
-        try:
-            me = requests.get(ME_URL, headers={"Authorization": f"Bearer {access}"}, timeout=10)
-            if me.status_code == 200:
-                AuthState.user = me.json()
-                with open(USER_FILE, "w", encoding="utf-8") as f:
-                    json.dump(AuthState.user, f, ensure_ascii=False)
-        except Exception:
-            pass
-        with open(TOKEN_FILE, "w", encoding="utf-8") as f:
-            json.dump({"access": access, "refresh": refresh}, f)
+
+        claimed = {"sheep_count": 0, "application_count": 0}
+        if db is not None:
+            try:
+                claimed = claim_guest_records(db)
+            except Exception:
+                db.rollback()
 
         self.next = MainMenu()
         self.next.show()
+        if claimed["sheep_count"] or claimed["application_count"]:
+            self.next.statusBar().showMessage(
+                f"Подтверждено локальных записей: овцы {claimed['sheep_count']}, бонитировки {claimed['application_count']}",
+                8000,
+            )
         self.close()

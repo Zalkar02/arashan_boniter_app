@@ -1,14 +1,18 @@
 # owner_select.py — выбор владельца (PyQt5), улучшенный поиск и UX
 import os
+from auth_state import AuthState
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QListWidget, QListWidgetItem, QMessageBox
 )
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QPalette, QColor, QKeySequence
-from unicodedata import normalize
-import re
+from PyQt5.QtCore import QSize
 from owner_create import OwnerCreateDialog
+from resource_paths import resource_path
+from services.db_service import get_db
+from services.owner_search_service import find_owners, format_owner_display
+from services.owner_service import soft_delete_owner
 
 SheepCreateWindowClass = None
 try:
@@ -18,8 +22,8 @@ except Exception:
 
 # ── БД ──────────────────────────────────────────────────────
 try:
-    from db.models import init_db, User
-    db = init_db()
+    from db.models import User
+    db = get_db()
 except Exception as e:
     db = None
     User = None
@@ -27,7 +31,7 @@ except Exception as e:
 else:
     _db_error = None
 
-THEME_PATH = os.path.join("styles", "light_theme.qss")
+THEME_PATH = resource_path("styles", "light_theme.qss")
 
 # Опциональный импорт следующего экрана (если появится)
 SheepListClass = None
@@ -35,19 +39,6 @@ try:
     from sheep_list import SheepList as SheepListClass
 except Exception:
     SheepListClass = None
-
-def _norm(s: str) -> str:
-    """Юникод-нормализация + схлопывание пробелов + casefold."""
-    if not s:
-        return ""
-    s = normalize("NFKC", s)
-    s = re.sub(r"\s+", " ", s).strip()
-    return s.casefold()
-
-
-def _digits(s: str) -> str:
-    """Оставить только цифры (для сравнения телефонов)."""
-    return "".join(ch for ch in (s or "") if ch.isdigit())
 
 
 class OwnerSelect(QMainWindow):
@@ -101,17 +92,24 @@ class OwnerSelect(QMainWindow):
 
         self.btn_add_owner = QPushButton("Добавить владельца")
         self.btn_add_owner.clicked.connect(self.add_owner)
+        self.btn_edit_owner = QPushButton("Редактировать")
+        self.btn_edit_owner.clicked.connect(self.edit_owner)
+        self.btn_delete_owner = QPushButton("Удалить")
+        self.btn_delete_owner.clicked.connect(self.delete_owner)
 
         top.addWidget(self.input_search, 4)
         top.addWidget(self.btn_search, 1)
         top.addWidget(self.btn_clear, 1)
         top.addWidget(self.btn_add_owner, 2)
+        top.addWidget(self.btn_edit_owner, 1)
+        top.addWidget(self.btn_delete_owner, 1)
 
         self.list_owners = QListWidget()
         # шрифт списка покрупнее
         self.list_owners.setObjectName("ownersList")              # задаём id
-        self.list_owners.setStyleSheet("#ownersList { font-size: 20px; }")
+        self.list_owners.setStyleSheet("#ownersList { font-size: 18px; }")
         self.list_owners.setSpacing(4)  # пусть отступы останутся
+        self.list_owners.setUniformItemSizes(False)
         self.list_owners.itemDoubleClicked.connect(lambda _: self.continue_with_owner())
         v.addWidget(self.list_owners, 1)
 
@@ -156,21 +154,6 @@ class OwnerSelect(QMainWindow):
 
     # ── Логика ──────────────────────────────────────────────
 
-    def _all_users(self):
-        if db is None or User is None:
-            return []
-        try:
-            return db.query(User).order_by(User.name).all()
-        except Exception as e:
-            QMessageBox.critical(self, "Ошибка БД", str(e))
-            return []
-
-    def _match_user(self, u, q_norm: str, q_digits: str) -> bool:
-        """Совпадение по имени/логину (нормализовано) или по телефону (цифры)."""
-        name_ok = q_norm in _norm(u.name)
-        phone_ok = (q_digits and q_digits in _digits(u.phone))
-        return name_ok or phone_ok
-
     def search_owners(self):
         raw = (self.input_search.text() or "").strip()
         self.list_owners.clear()
@@ -179,31 +162,20 @@ class OwnerSelect(QMainWindow):
             QMessageBox.critical(self, "База данных", _db_error or "Недоступна")
             return
 
-        q_norm = _norm(raw)
-        q_digits = _digits(raw)
-
-        # Пустой запрос — показать всех
-        candidates = self._all_users()
-        if not raw:
-            owners = candidates
-        else:
-            owners = [o for o in candidates if self._match_user(o, q_norm, q_digits)]
+        try:
+            owners = find_owners(db, User, raw)
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка БД", str(e))
+            return
 
         if not owners:
             self.statusBar().showMessage("Совпадений не найдено")
             return
 
         for o in owners:
-            # Формат отображения
-            parts = [
-                o.name or "Без имени",
-                (o.phone or "").strip(),
-                (o.city or "").strip(),
-                # f"логин: {o.username or '—'}",
-            ]
-            display = " • ".join([p for p in parts if p])
-            item = QListWidgetItem(display)
+            item = QListWidgetItem(format_owner_display(o))
             item.setData(Qt.UserRole, o.id)
+            item.setSizeHint(QSize(0, 88))
             self.list_owners.addItem(item)
 
         self.statusBar().showMessage(f"Найдено: {len(owners)}")
@@ -227,6 +199,52 @@ class OwnerSelect(QMainWindow):
                     self.list_owners.setCurrentItem(it)
                     break
             self.statusBar().showMessage("Владелец создан и добавлен в список", 5000)
+
+    def edit_owner(self):
+        it = self.list_owners.currentItem()
+        if not it:
+            QMessageBox.warning(self, "Ошибка", "Выберите владельца")
+            return
+        owner_id = it.data(Qt.UserRole)
+        owner = db.query(User).filter_by(id=owner_id, is_deleted=False).first()
+        if owner is None:
+            QMessageBox.warning(self, "Ошибка", "Владелец не найден")
+            return
+        dlg = OwnerCreateDialog(self, owner=owner)
+        if dlg.exec_() == dlg.Accepted:
+            self.search_owners()
+            self.statusBar().showMessage("Владелец обновлён", 5000)
+
+    def delete_owner(self):
+        it = self.list_owners.currentItem()
+        if not it:
+            QMessageBox.warning(self, "Ошибка", "Выберите владельца")
+            return
+        owner_id = it.data(Qt.UserRole)
+        owner = db.query(User).filter_by(id=owner_id, is_deleted=False).first()
+        if owner is None:
+            QMessageBox.warning(self, "Ошибка", "Владелец не найден")
+            return
+        current_user_id = (AuthState.user or {}).get("id")
+        if current_user_id is None:
+            QMessageBox.warning(self, "Удаление", "Для удаления нужно войти в систему.")
+            return
+        answer = QMessageBox.question(
+            self,
+            "Удаление владельца",
+            f"Удалить владельца «{owner.name or owner.username or owner.id}»?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        try:
+            soft_delete_owner(db, owner, current_user_id)
+        except Exception as e:
+            QMessageBox.warning(self, "Удаление", str(e))
+            return
+        self.search_owners()
+        self.statusBar().showMessage("Владелец удалён", 5000)
 
     def continue_with_owner(self):
         it = self.list_owners.currentItem()

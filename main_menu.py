@@ -8,19 +8,19 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont, QPalette, QColor, QIcon, QKeySequence
 
 from owner_select import OwnerSelect as OwnerSelectClass
+from resource_paths import resource_path
 from history import HistoryWindow
+from database_browser import DatabaseBrowserWindow
 from auth_state import AuthState
+from services.user_context_service import get_current_user_name
 from settings import SettingsWindow
 
-THEME_PATH = os.path.join("styles", "light_theme.qss")
+THEME_PATH = resource_path("styles", "light_theme.qss")
+ICON_PATH = resource_path("assets", "app_icon.svg")
 
 class MainMenu(QMainWindow):
     def __init__(self):
         super().__init__()
-        if AuthState.user is None:
-            QMessageBox.warning(self, "Доступ", "Сначала выполните вход")
-            self.close()
-            return
 
         self.setWindowTitle("Арашан — Главное меню")
         self.resize(1200, 800)
@@ -79,6 +79,13 @@ class MainMenu(QMainWindow):
         self.btn_history.clicked.connect(self.view_history)
         row.addWidget(self.btn_history, 1)
 
+        self.btn_database = QPushButton("База данных")
+        self.btn_database.setMinimumHeight(96)
+        self.btn_database.setStyleSheet(btn_style)
+        self.btn_database.setShortcut(QKeySequence("Ctrl+D"))
+        self.btn_database.clicked.connect(self.open_database)
+        row.addWidget(self.btn_database, 1)
+
         self.btn_settings = QPushButton("Настройки")
         self.btn_settings.setMinimumHeight(96)
         self.btn_settings.setStyleSheet(btn_style)
@@ -87,13 +94,11 @@ class MainMenu(QMainWindow):
         row.addWidget(self.btn_settings, 1)
 
         # Подсказка
-        hint = QLabel("Горячие клавиши:  Ctrl+N — Начать,  Ctrl+H — История,  Ctrl+, — Настройки,  Ctrl+Q — Выход")
+        hint = QLabel("Горячие клавиши:  Ctrl+N — Начать,  Ctrl+H — История,  Ctrl+D — База данных,  Ctrl+, — Настройки,  Ctrl+Q — Выход")
         hint.setAlignment(Qt.AlignHCenter)
         v.addWidget(hint)
 
-        user_name = ""
-        if AuthState.user:
-            user_name = AuthState.user.get("name") or AuthState.user.get("username") or ""
+        user_name = get_current_user_name(AuthState.user)
         self.lbl_user = QLabel(f"Бонитёр: {user_name or '—'}")
         self.lbl_user.setAlignment(Qt.AlignHCenter)
         v.addWidget(self.lbl_user)
@@ -127,10 +132,16 @@ class MainMenu(QMainWindow):
         self.next.show()
         self.hide()
 
+    def open_database(self):
+        self.next = DatabaseBrowserWindow(self)
+        self.next.prev = self
+        self.next.show()
+        self.hide()
+
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    if os.path.exists("icon.png"):
-        app.setWindowIcon(QIcon("icon.png"))
+    if os.path.exists(ICON_PATH):
+        app.setWindowIcon(QIcon(ICON_PATH))
     w = MainMenu()
     w.show()
     sys.exit(app.exec_())

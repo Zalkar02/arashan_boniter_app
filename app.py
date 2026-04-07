@@ -1,56 +1,47 @@
-import sys, json, os, requests
+import sys
 from PyQt5.QtWidgets import QApplication
-from login import LoginWindow
+from PyQt5.QtGui import QIcon
 from auth_state import AuthState
+from api_config import build_api_url
 from main_menu import MainMenu
+from resource_paths import resource_path
+from services.auth_service import load_user, restore_authenticated_session
+from services.db_service import get_db
+from services.guest_records_service import claim_guest_records
 
 
 def main():
     app = QApplication(sys.argv)
-    TOKEN_FILE = "tokens.json"
-    USER_FILE = "user.json"
-    TOKEN_REFRESH_URL = "https://arashan.zet.kg/api/token/refresh/"
-    ME_URL = "https://arashan.zet.kg/api/users/me/"
+    icon_path = resource_path("assets", "app_icon.svg")
+    if icon_path:
+        app.setWindowIcon(QIcon(icon_path))
+    token_refresh_url = build_api_url("/api/token/refresh/")
+    me_url = build_api_url("/api/users/me/")
     w = None
+    session = get_db()
+    claimed = {"sheep_count": 0, "application_count": 0}
 
     # если есть сохранённый user — используем его сразу
-    if os.path.exists(USER_FILE):
-        try:
-            with open(USER_FILE, "r", encoding="utf-8") as f:
-                AuthState.user = json.load(f)
-        except Exception:
-            AuthState.user = None
+    saved_user = load_user()
+    AuthState.user = saved_user
 
-    if os.path.exists(TOKEN_FILE):
+    if saved_user:
         try:
-            with open(TOKEN_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            refresh = data.get("refresh")
-            if refresh:
-                r = requests.post(TOKEN_REFRESH_URL, json={"refresh": refresh}, timeout=10)
-                if r.status_code == 200:
-                    access = r.json().get("access")
-                    if access:
-                        AuthState.access = access
-                        AuthState.refresh = refresh
-                        try:
-                            me = requests.get(ME_URL, headers={"Authorization": f"Bearer {access}"}, timeout=10)
-                            if me.status_code == 200:
-                                AuthState.user = me.json()
-                                with open(USER_FILE, "w", encoding="utf-8") as f:
-                                    json.dump(AuthState.user, f, ensure_ascii=False)
-                        except Exception:
-                            pass
-                        w = MainMenu()
+            restored = restore_authenticated_session(token_refresh_url, me_url)
+            if restored:
+                claimed = claim_guest_records(session)
+                w = MainMenu()
         except Exception:
             w = None
 
     if w is None:
-        if AuthState.user is not None:
-            w = MainMenu()
-        else:
-            w = LoginWindow()
+        w = MainMenu()
     w.show()
+    if claimed["sheep_count"] or claimed["application_count"]:
+        w.statusBar().showMessage(
+            f"Подтверждено локальных записей: овцы {claimed['sheep_count']}, бонитировки {claimed['application_count']}",
+            8000,
+        )
     sys.exit(app.exec_())
 
 

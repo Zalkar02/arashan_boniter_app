@@ -1,8 +1,8 @@
 # migrate_sheep_add_cols.py — обновление схемы SQLite под новые поля/таблицы
 from sqlalchemy import create_engine, text
+from state_paths import ensure_db_path
 
-# 👉 если путь другой — поправь:
-DB_URL = "sqlite:///sheep_local.db"
+DB_URL = f"sqlite:///{ensure_db_path()}"
 
 TABLE_COLS = {
     "colors": {
@@ -16,12 +16,14 @@ TABLE_COLS = {
         "out": "BOOLEAN DEFAULT 0",
         "hide": "BOOLEAN DEFAULT 0",
         "boniter": "INTEGER",
+        "created_by_guest": "BOOLEAN DEFAULT 0",
         "is_deleted": "BOOLEAN DEFAULT 0",
     },
     "applications": {
         "size": "VARCHAR",
         "fur_structure": "VARCHAR",
         "boniter": "INTEGER",
+        "created_by_guest": "BOOLEAN DEFAULT 0",
         "is_deleted": "BOOLEAN DEFAULT 0",
     },
 }

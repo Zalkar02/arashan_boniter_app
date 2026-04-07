@@ -1,9 +1,10 @@
 from sqlalchemy import (
     Column, Integer, String, Date, Boolean, ForeignKey,
-    Float, DateTime, Numeric, Text, Table, create_engine
+    Float, DateTime, Numeric, Text, Table, create_engine, text
 )
 from sqlalchemy.orm import declarative_base, relationship, sessionmaker
 import datetime
+from state_paths import ensure_db_path
 
 Base = declarative_base()
 
@@ -20,6 +21,8 @@ class User(Base):
     __tablename__ = 'users'
     id = Column(Integer, primary_key=True)
     remote_id = Column(Integer, nullable=True)
+    created_by_user_id = Column(Integer, nullable=True)
+    is_deleted = Column(Boolean, default=False)
     username = Column(String, unique=True)
     password = Column(String)                # пароль
     name = Column(String)
@@ -53,6 +56,7 @@ class Sheep(Base):
     __tablename__ = 'sheep'
     id = Column(Integer, primary_key=True)
     remote_id = Column(Integer, nullable=True)
+    created_by_user_id = Column(Integer, nullable=True)
     id_n = Column(String, unique=True)
     nick = Column(String)
     dob = Column(Date)
@@ -72,7 +76,11 @@ class Sheep(Base):
     hide = Column(Boolean, default=False)
     boniter = Column(Integer, ForeignKey("boniters.id"), nullable=True)
     boniter_rel = relationship("Boniter")
+    created_by_guest = Column(Boolean, default=False)
+    payment_reference = Column(String, nullable=True)
+    payment_token = Column(Text, nullable=True)
     is_paid = Column(Boolean, default=False)
+    is_printed = Column(Boolean, default=False)
     is_deleted = Column(Boolean, default=False)
 
     synced = Column(Boolean, default=False)
@@ -85,6 +93,22 @@ class Sheep(Base):
         secondaryjoin=id == sheep_parents.c.parent_id,
         backref="children",
     )
+    lamb = relationship("Lamb", back_populates="sheep", uselist=False)
+
+
+class Lamb(Base):
+    __tablename__ = 'lambs'
+    id = Column(Integer, primary_key=True)
+    remote_id = Column(Integer, nullable=True)
+    created_by_user_id = Column(Integer, nullable=True)
+    sheep_id = Column(Integer, ForeignKey('sheep.id'), unique=True, nullable=False)
+    sheep = relationship("Sheep", back_populates="lamb")
+    weight = Column(Float, nullable=True)
+    litter_size = Column(Integer, nullable=True)
+    is_deleted = Column(Boolean, default=False)
+
+    synced = Column(Boolean, default=False)
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow)
 
 
 # 👥 Владелец (связь Sheep ↔ User)
@@ -120,6 +144,7 @@ class Application(Base):
     __tablename__ = 'applications'
     id = Column(Integer, primary_key=True)
     remote_id = Column(Integer, nullable=True)
+    created_by_user_id = Column(Integer, nullable=True)
     sheep_id = Column(Integer, ForeignKey('sheep.id'))
     sheep = relationship("Sheep")
     weight = Column(Float)
@@ -145,7 +170,11 @@ class Application(Base):
     note = Column(String)
     boniter = Column(Integer, ForeignKey("boniters.id"), nullable=True)
     boniter_rel = relationship("Boniter")
+    created_by_guest = Column(Boolean, default=False)
+    payment_reference = Column(String, nullable=True)
+    payment_token = Column(Text, nullable=True)
     is_paid = Column(Boolean, default=False)
+    is_printed = Column(Boolean, default=False)
     is_deleted = Column(Boolean, default=False)
     synced = Column(Boolean, default=False)
     updated_at = Column(DateTime, default=datetime.datetime.utcnow)
@@ -162,8 +191,48 @@ class Photo(Base):
     updated_at = Column(DateTime, default=datetime.datetime.utcnow)
 
 
+def _get_columns(conn, table_name):
+    result = conn.execute(text(f"PRAGMA table_info({table_name})"))
+    return {row[1] for row in result}
+
+
+def _ensure_local_columns(engine):
+    required = {
+        "users": {
+            "created_by_user_id": "INTEGER",
+            "is_deleted": "BOOLEAN DEFAULT 0",
+        },
+        "sheep": {
+            "created_by_user_id": "INTEGER",
+            "created_by_guest": "BOOLEAN DEFAULT 0",
+            "payment_reference": "TEXT",
+            "payment_token": "TEXT",
+            "is_printed": "BOOLEAN DEFAULT 0",
+        },
+        "applications": {
+            "created_by_user_id": "INTEGER",
+            "created_by_guest": "BOOLEAN DEFAULT 0",
+            "payment_reference": "TEXT",
+            "payment_token": "TEXT",
+            "is_printed": "BOOLEAN DEFAULT 0",
+        },
+    }
+
+    with engine.begin() as conn:
+        for table_name, columns in required.items():
+            existing = _get_columns(conn, table_name)
+            for column_name, sql_type in columns.items():
+                if column_name not in existing:
+                    conn.execute(
+                        text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {sql_type}")
+                    )
+
+
 # 📦 Инициализация базы
-def init_db(path="sheep_local.db"):
+def init_db(path=None):
+    if path is None:
+        path = ensure_db_path()
     engine = create_engine(f"sqlite:///{path}")
     Base.metadata.create_all(engine)
+    _ensure_local_columns(engine)
     return sessionmaker(bind=engine)()
