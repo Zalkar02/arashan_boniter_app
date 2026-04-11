@@ -3,6 +3,7 @@ import json
 import os
 import shutil
 import subprocess
+import tempfile
 from io import BytesIO
 from typing import Iterable
 
@@ -748,32 +749,26 @@ def print_pdf_pages(pdf_path: str, pages: list[int], printer_name: str | None = 
     if min(pages) <= 0:
         raise RuntimeError("Некорректные номера страниц для печати.")
 
-    lp_path = shutil.which("lp")
-    if lp_path is None:
-        raise RuntimeError("Не найдена команда lp для отправки на печать.")
+    reader = PdfReader(pdf_path)
+    total_pages = len(reader.pages)
+    invalid = [page for page in pages if page > total_pages]
+    if invalid:
+        raise RuntimeError("Запрошены страницы, которых нет в PDF.")
 
-    selected_printer = printer_name if printer_name is not None else get_saved_printer()
-    cmd = [lp_path, "-o", "media=A4", "-P", ",".join(str(page) for page in pages)]
-    if selected_printer:
-        cmd.extend(["-d", selected_printer])
-    cmd.append(pdf_path)
+    writer = PdfWriter()
+    for page_number in pages:
+        writer.add_page(reader.pages[page_number - 1])
 
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        message = (result.stderr or result.stdout or "Не удалось отправить на печать.").strip()
-        scheduler_probe = subprocess.run(
-            ["lpstat", "-p", "-d"],
-            capture_output=True,
-            text=True,
-        )
-        scheduler_status = (scheduler_probe.stderr or scheduler_probe.stdout or "").strip()
-        if "Scheduler is not running" in scheduler_status:
-            raise RuntimeError(
-                "Система печати CUPS не запущена. Запусти службу печати и проверь, что принтер добавлен."
-            )
-        if "no system default destination" in scheduler_status and not selected_printer:
-            raise RuntimeError(
-                "Не задан принтер по умолчанию. Добавь принтер в системе или выбери его явно."
-            )
-        raise RuntimeError(message)
-    return (result.stdout or "Документ отправлен на печать.").strip()
+    ensure_state_dir()
+    with tempfile.NamedTemporaryFile(prefix="print_pages_", suffix=".pdf", dir=STATE_DIR, delete=False) as tmp:
+        temp_pdf_path = tmp.name
+
+    try:
+        with open(temp_pdf_path, "wb") as fh:
+            writer.write(fh)
+        return print_pdf_page_range(temp_pdf_path, 1, len(pages), printer_name=printer_name)
+    finally:
+        try:
+            os.remove(temp_pdf_path)
+        except OSError:
+            pass

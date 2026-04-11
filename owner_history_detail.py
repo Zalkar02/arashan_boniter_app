@@ -159,20 +159,23 @@ class PrintBatchDialog(QDialog):
     def print_front(self):
         batch = self.batches[self.batch_index]
         total = len(batch)
-        front_result = print_pdf_page_range(self.current_pdf_path, 1, total)
-        save_pending_print_job(
-            pdf_path=self.current_pdf_path,
-            total_cards=total,
-            owner_id=self.owner_id,
-            sheep_ids=[row["sheep"].id for row in batch],
-        )
-        self.front_printed = True
-        self._refresh_state()
-        QMessageBox.information(
-            self,
-            "Печать",
-            f"Лицевые страницы отправлены на печать.\n{front_result}\n\nТеперь переверните листы.",
-        )
+        try:
+            front_result = print_pdf_page_range(self.current_pdf_path, 1, total)
+            save_pending_print_job(
+                pdf_path=self.current_pdf_path,
+                total_cards=total,
+                owner_id=self.owner_id,
+                sheep_ids=[row["sheep"].id for row in batch],
+            )
+            self.front_printed = True
+            self._refresh_state()
+            QMessageBox.information(
+                self,
+                "Печать",
+                f"Лицевые страницы отправлены на печать.\n{front_result}\n\nТеперь переверните листы.",
+            )
+        except Exception as exc:
+            QMessageBox.warning(self, "Печать", str(exc))
 
     def print_back(self):
         job = get_pending_print_job()
@@ -181,18 +184,21 @@ class PrintBatchDialog(QDialog):
             return
         batch = self.batches[self.batch_index]
         total = len(batch)
-        if get_back_print_order() == "reverse":
-            back_result = print_pdf_pages(
-                self.current_pdf_path,
-                list(range(total * 2, total, -1)),
-            )
-        else:
-            back_result = print_pdf_page_range(self.current_pdf_path, total + 1, total * 2)
-        _mark_batch_printed(self.db, batch)
-        clear_pending_print_job()
-        self.back_printed = True
-        self._refresh_state()
-        QMessageBox.information(self, "Печать", f"Оборотные страницы отправлены на печать.\n{back_result}")
+        try:
+            if get_back_print_order() == "reverse":
+                back_result = print_pdf_pages(
+                    self.current_pdf_path,
+                    list(range(total * 2, total, -1)),
+                )
+            else:
+                back_result = print_pdf_page_range(self.current_pdf_path, total + 1, total * 2)
+            _mark_batch_printed(self.db, batch)
+            clear_pending_print_job()
+            self.back_printed = True
+            self._refresh_state()
+            QMessageBox.information(self, "Печать", f"Оборотные страницы отправлены на печать.\n{back_result}")
+        except Exception as exc:
+            QMessageBox.warning(self, "Печать", str(exc))
 
     def next_batch(self):
         self.batch_index += 1
