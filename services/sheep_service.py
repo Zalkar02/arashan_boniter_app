@@ -1,6 +1,6 @@
 import datetime
 
-from db.models import Application, Owner, Sheep
+from db.models import Application, Lamb, Owner, Sheep
 
 
 def save_sheep_bundle(session, payload: dict):
@@ -73,6 +73,18 @@ def save_sheep_bundle(session, payload: dict):
                 setattr(application, field_name, value)
             application.updated_at = datetime.datetime.utcnow()
             application.synced = False
+
+    lamb_data = payload.get("lamb")
+    if lamb_data is not None:
+        lamb = session.query(Lamb).filter_by(sheep_id=sheep.id).first()
+        if lamb is None:
+            lamb = Lamb(sheep_id=sheep.id, **lamb_data)
+            session.add(lamb)
+        else:
+            for field_name, value in lamb_data.items():
+                setattr(lamb, field_name, value)
+            lamb.updated_at = datetime.datetime.utcnow()
+            lamb.synced = False
 
     session.commit()
     return sheep, created

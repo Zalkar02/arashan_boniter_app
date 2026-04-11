@@ -676,8 +676,14 @@ def run_sync(progress_cb=None, should_stop=None):
 
 def run_owner_sync(owner_id: int, progress_cb=None, should_stop=None):
     session = init_db()
-    _emit_progress(progress_cb, "upload", "", 0, 0, "Синхронизация хозяйства...")
-    return sync_owner_to_server(session, owner_id, progress_cb=progress_cb, should_stop=should_stop)
+    _emit_progress(progress_cb, "upload", "", 0, 0, "Отправка данных хозяйства...")
+    ok_up = sync_owner_to_server(session, owner_id, progress_cb=progress_cb, should_stop=should_stop)
+    _check_stop(should_stop)
+    _emit_progress(progress_cb, "download", "", 0, 0, "Загрузка обновлений с сервера...")
+    ok_down = sync_from_server(session, progress_cb=progress_cb, should_stop=should_stop)
+    if ok_up and ok_down:
+        update_last_sync_time()
+    return ok_up and ok_down
 
 if __name__ == "__main__":
     run_sync()

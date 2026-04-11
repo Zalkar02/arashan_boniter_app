@@ -1,3 +1,6 @@
+from sqlalchemy import func
+
+
 def get_owner_by_id(session, user_model, owner_id: int):
     return session.query(user_model).filter_by(id=owner_id, is_deleted=False).first()
 
@@ -12,6 +15,24 @@ def get_all_colors(session, color_model):
 
 def get_all_sheep(session, sheep_model):
     return session.query(sheep_model).filter_by(is_deleted=False).order_by(sheep_model.id.desc()).all()
+
+
+def search_sheep_for_picker(session, sheep_model, raw_query: str = "", gender_filter: str | None = None, limit: int = 100):
+    query = session.query(sheep_model).filter_by(is_deleted=False)
+
+    gender = (gender_filter or "").strip().upper()
+    if gender in {"B", "O"}:
+        query = query.filter(sheep_model.gender == gender)
+
+    text = (raw_query or "").strip()
+    if text:
+        lowered = text.casefold()
+        query = query.filter(
+            func.lower(func.coalesce(sheep_model.id_n, "")).contains(lowered)
+            | func.lower(func.coalesce(sheep_model.nick, "")).contains(lowered)
+        )
+
+    return query.order_by(sheep_model.id.desc()).limit(max(1, min(limit, 200))).all()
 
 
 def get_sheep_by_idn(session, sheep_model, idn: str):

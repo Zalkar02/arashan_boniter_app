@@ -31,6 +31,7 @@ LINE_EXTRA_BY_PLACEHOLDER = {
     "{nick}": 150,
     "{dob}": 35,
     "{weight}": 8,
+    "{birthCount}": 22,
     "{birth_place}": 250,
 }
 REPORTLAB_FONT = "DejaVuSans"
@@ -55,31 +56,28 @@ def replace_placeholder(page, placeholder: str, value: str, fontname: str = "Tim
     fontfile = next((path for path in FONT_CANDIDATES if Path(path).exists()), None)
     for rect in rects:
         page.draw_rect(rect, color=None, fill=(1, 1, 1), overlay=True)
-    if not value:
-        return
     for rect in rects:
         fontsize = max(min(rect.height * 0.85, 10), 8)
         text_y = rect.y1 - 3.4
         font_name = "DejaVuSans" if fontfile else "helv"
         measure_font = "helv"
-        text_length = fitz.get_text_length(value, fontname=measure_font, fontsize=fontsize)
-        page.insert_text(
-            fitz.Point(rect.x0 + 1, text_y),
-            value,
-            fontsize=fontsize,
-            fontname=font_name,
-            fontfile=fontfile,
-            color=(0, 0, 0),
-            overlay=True,
-        )
+        text_length = fitz.get_text_length(value, fontname=measure_font, fontsize=fontsize) if value else 0
+        if value:
+            page.insert_text(
+                fitz.Point(rect.x0 + 1, text_y),
+                value,
+                fontsize=fontsize,
+                fontname=font_name,
+                fontfile=fontfile,
+                color=(0, 0, 0),
+                overlay=True,
+            )
         line_y = rect.y1 - 1.2
-        line_end_x = min(rect.x1, rect.x0 + 1 + text_length + 4)
+        extra = LINE_EXTRA_BY_PLACEHOLDER.get(placeholder, 24)
+        line_end_x = min(rect.x1 + extra, max(rect.x1, rect.x0 + 1 + text_length + 4) + extra)
         page.draw_line(
             fitz.Point(rect.x0, line_y),
-            fitz.Point(
-                min(rect.x1 + LINE_EXTRA_BY_PLACEHOLDER.get(placeholder, 24), line_end_x + LINE_EXTRA_BY_PLACEHOLDER.get(placeholder, 24)),
-                line_y,
-            ),
+            fitz.Point(line_end_x, line_y),
             color=(0, 0, 0),
             width=0.6,
             overlay=True,
@@ -319,6 +317,15 @@ def load_sample_data(id_n: str) -> dict:
         ).fetchall()
 
         latest_app = applications[-1] if applications else None
+        lamb = conn.execute(
+            """
+            SELECT *
+            FROM lambs
+            WHERE sheep_id = ? AND COALESCE(is_deleted, 0) = 0
+            LIMIT 1
+            """,
+            (sheep["id"],),
+        ).fetchone()
 
         parents = conn.execute(
             """
@@ -360,9 +367,9 @@ def load_sample_data(id_n: str) -> dict:
         birth_place = ", ".join([str(part).strip() for part in place_parts if part])
 
         weight = ""
-        if latest_app is not None and latest_app["weight"] is not None:
-            weight_value = float(latest_app["weight"])
-            weight = str(int(weight_value)) if weight_value.is_integer() else str(latest_app["weight"])
+        if lamb is not None and lamb["weight"] is not None:
+            weight_value = float(lamb["weight"])
+            weight = str(int(weight_value)) if weight_value.is_integer() else str(lamb["weight"])
 
         return {
             "placeholders": {
@@ -372,6 +379,7 @@ def load_sample_data(id_n: str) -> dict:
                 "{nick}": sheep["nick"] or "",
                 "{dob}": sheep["dob"] or "",
                 "{weight}": weight,
+                "{birthCount}": str(lamb["litter_size"]) if lamb is not None and lamb["litter_size"] is not None else "",
                 "{birth_place}": birth_place,
             },
             "gender": sheep["gender"] or "",

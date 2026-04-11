@@ -1,16 +1,20 @@
 import datetime
+from sqlalchemy import case, func, or_
 
 
 RECENT_DAYS = 30
 
 
-def _build_current_owner_map(session, owner_model):
+def _build_current_owner_map(session, owner_model, sheep_ids=None):
     current_owner_map = {}
-    owner_rows = (
-        session.query(owner_model)
-        .order_by(owner_model.owner_bool.desc(), owner_model.date1.desc().nullslast(), owner_model.id.desc())
-        .all()
-    )
+    query = session.query(owner_model)
+    if sheep_ids:
+        query = query.filter(owner_model.sheep_id.in_(sheep_ids))
+    owner_rows = query.order_by(
+        owner_model.owner_bool.desc(),
+        owner_model.date1.desc().nullslast(),
+        owner_model.id.desc(),
+    ).all()
     for owner_row in owner_rows:
         sheep_id = getattr(owner_row, "sheep_id", None)
         owner = getattr(owner_row, "owner", None)
@@ -28,23 +32,33 @@ def _resolve_sheep_owner(sheep, current_owner_map):
 
 
 def get_owner_history_rows(session, application_model, sheep_model, owner_model, raw_query: str):
-    query = (raw_query or "").strip().casefold()
+    query = (raw_query or "").strip()
     recent_since = datetime.date.today() - datetime.timedelta(days=RECENT_DAYS)
-    current_owner_map = _build_current_owner_map(session, owner_model)
-
-    sheep_rows = (
-        session.query(sheep_model)
+    sheep_query = session.query(sheep_model).filter_by(is_deleted=False)
+    if query:
+        like = f"%{query}%"
+        sheep_query = sheep_query.filter(
+            or_(
+                sheep_model.id_n.ilike(like),
+                sheep_model.nick.ilike(like),
+            )
+        )
+    sheep_rows = sheep_query.order_by(sheep_model.date_filling.desc().nullslast(), sheep_model.id.desc()).all()
+    sheep_ids = [sheep.id for sheep in sheep_rows]
+    current_owner_map = _build_current_owner_map(session, owner_model, sheep_ids=sheep_ids)
+    application_stats = (
+        session.query(
+            application_model.sheep_id.label("sheep_id"),
+            func.count(application_model.id).label("applications_count"),
+            func.max(application_model.date).label("latest_date"),
+            func.max(case((application_model.is_paid.is_(False), 1), else_=0)).label("has_unpaid"),
+        )
         .filter_by(is_deleted=False)
-        .order_by(sheep_model.date_filling.desc().nullslast(), sheep_model.id.desc())
+        .filter(application_model.sheep_id.isnot(None))
+        .group_by(application_model.sheep_id)
         .all()
     )
-    applications = session.query(application_model).filter_by(is_deleted=False).all()
-
-    app_by_sheep_id = {}
-    for application in applications:
-        if application.sheep_id is None:
-            continue
-        app_by_sheep_id.setdefault(application.sheep_id, []).append(application)
+    app_stats_by_sheep_id = {row.sheep_id: row for row in application_stats}
 
     owners = {}
     for sheep in sheep_rows:
@@ -56,7 +70,7 @@ def get_owner_history_rows(session, application_model, sheep_model, owner_model,
         if owner_id is None or bool(getattr(owner, "is_deleted", False)):
             continue
 
-        owner_apps = app_by_sheep_id.get(sheep.id, [])
+        app_stats = app_stats_by_sheep_id.get(sheep.id)
         bucket = owners.setdefault(
             owner_id,
             {
@@ -71,7 +85,7 @@ def get_owner_history_rows(session, application_model, sheep_model, owner_model,
         )
 
         bucket["total_sheep"] += 1
-        if owner_apps:
+        if app_stats and app_stats.applications_count:
             bucket["sheep_with_applications"] += 1
         else:
             bucket["sheep_without_applications"] += 1
@@ -79,7 +93,7 @@ def get_owner_history_rows(session, application_model, sheep_model, owner_model,
         if sheep.date_filling and sheep.date_filling >= recent_since:
             bucket["recent_sheep"] += 1
 
-        if any(not bool(getattr(app, "is_paid", False)) for app in owner_apps):
+        if app_stats and app_stats.has_unpaid:
             bucket["unpaid_sheep"] += 1
 
         latest_activity = bucket["latest_activity"]
@@ -87,11 +101,10 @@ def get_owner_history_rows(session, application_model, sheep_model, owner_model,
         if sheep_activity and (latest_activity is None or sheep_activity > latest_activity):
             bucket["latest_activity"] = sheep_activity
 
-        for application in owner_apps:
-            app_activity = getattr(application, "date", None)
-            latest_activity = bucket["latest_activity"]
-            if app_activity and (latest_activity is None or app_activity > latest_activity):
-                bucket["latest_activity"] = app_activity
+        app_activity = getattr(app_stats, "latest_date", None)
+        latest_activity = bucket["latest_activity"]
+        if app_activity and (latest_activity is None or app_activity > latest_activity):
+            bucket["latest_activity"] = app_activity
 
     filtered = []
     for bucket in owners.values():
@@ -104,8 +117,9 @@ def get_owner_history_rows(session, application_model, sheep_model, owner_model,
                 str(getattr(owner, "area", "") or ""),
                 str(getattr(owner, "region", "") or ""),
             ]
-        ).casefold()
-        if query and query not in haystack:
+        )
+        haystack = haystack.casefold()
+        if query and query.casefold() not in haystack:
             continue
         filtered.append(bucket)
 
@@ -143,15 +157,39 @@ def get_owner_detail_rows(session, user_model, sheep_model, application_model, o
     if owner is None:
         return None
 
-    current_owner_map = _build_current_owner_map(session, owner_model)
+    direct_sheep = session.query(sheep_model).filter_by(owner_id=owner_id, is_deleted=False).all()
+    linked_sheep_ids = {
+        sheep_id
+        for (sheep_id,) in session.query(owner_model.sheep_id).filter(owner_model.owner_id == owner_id).all()
+        if sheep_id is not None
+    }
 
-    sheep_rows = (
-        session.query(sheep_model)
-        .filter_by(is_deleted=False)
-        .order_by(sheep_model.date_filling.desc().nullslast(), sheep_model.id.desc())
-        .all()
+    sheep_rows = list(direct_sheep)
+    direct_ids = {row.id for row in direct_sheep}
+    missing_linked_ids = [sheep_id for sheep_id in linked_sheep_ids if sheep_id not in direct_ids]
+    if missing_linked_ids:
+        sheep_rows.extend(
+            session.query(sheep_model)
+            .filter(sheep_model.is_deleted.is_(False), sheep_model.id.in_(missing_linked_ids))
+            .all()
+        )
+
+    sheep_rows.sort(
+        key=lambda sheep: (
+            getattr(sheep, "date_filling", None) or datetime.date.min,
+            getattr(sheep, "id", 0) or 0,
+        ),
+        reverse=True,
     )
-    applications = session.query(application_model).filter_by(is_deleted=False).all()
+
+    sheep_ids = [sheep.id for sheep in sheep_rows]
+    current_owner_map = _build_current_owner_map(session, owner_model, sheep_ids=sheep_ids)
+    applications = (
+        session.query(application_model)
+        .filter(application_model.is_deleted.is_(False), application_model.sheep_id.in_(sheep_ids))
+        .all()
+        if sheep_ids else []
+    )
 
     app_by_sheep_id = {}
     for application in applications:

@@ -25,8 +25,10 @@ from services.db_service import get_db
 from services.history_service import format_owner_sheep_row, get_owner_detail_rows
 from services.passport_print_service import (
     clear_pending_print_job,
+    get_back_print_order,
     get_pending_print_job,
     get_print_batch_size,
+    print_pdf_pages,
     print_pdf_page_range,
     save_pending_print_job,
     generate_passports_pdf,
@@ -179,7 +181,13 @@ class PrintBatchDialog(QDialog):
             return
         batch = self.batches[self.batch_index]
         total = len(batch)
-        back_result = print_pdf_page_range(self.current_pdf_path, total + 1, total * 2)
+        if get_back_print_order() == "reverse":
+            back_result = print_pdf_pages(
+                self.current_pdf_path,
+                list(range(total * 2, total, -1)),
+            )
+        else:
+            back_result = print_pdf_page_range(self.current_pdf_path, total + 1, total * 2)
         _mark_batch_printed(self.db, batch)
         clear_pending_print_job()
         self.back_printed = True

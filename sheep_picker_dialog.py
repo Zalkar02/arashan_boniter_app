@@ -11,7 +11,7 @@ from PyQt5.QtWidgets import (
 )
 
 from services.db_service import get_db
-from services.sheep_lookup_service import get_all_sheep
+from services.sheep_lookup_service import search_sheep_for_picker
 
 try:
     from db.models import Sheep
@@ -57,22 +57,16 @@ class SheepPickerDialog(QDialog):
         if db is None or Sheep is None:
             return
 
-        query = (self.ed_search.text() or "").strip().casefold()
+        query = (self.ed_search.text() or "").strip()
         try:
-            rows = get_all_sheep(db, Sheep)
+            rows = search_sheep_for_picker(db, Sheep, query, self._gender, limit=120)
         except Exception:
             rows = []
 
-        want_gender = self._gender in ("B", "O")
         for sheep in rows:
             gender = (getattr(sheep, "gender", "") or "").upper()
-            if want_gender and gender != self._gender:
-                continue
-
             idn = getattr(sheep, "id_n", "") or ""
             nick = getattr(sheep, "nick", "") or ""
-            if query and (query not in idn.casefold()) and (query not in nick.casefold()):
-                continue
 
             gender_txt = "Овца" if gender == "O" else "Баран"
             item = QListWidgetItem(f"{idn or '—'} — {nick or 'без клички'} ({gender_txt})")

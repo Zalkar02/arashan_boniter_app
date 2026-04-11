@@ -27,6 +27,7 @@ EXPORTS_DIR = os.path.join(STATE_DIR, "exports")
 PRINT_SETTINGS_PATH = os.path.join(STATE_DIR, "print_settings.json")
 PRINT_JOB_STATE_PATH = os.path.join(STATE_DIR, "pending_print_job.json")
 DEFAULT_PRINT_BATCH_SIZE = 20
+DEFAULT_BACK_PRINT_ORDER = "reverse"
 FONT_NAME = "DejaVuSans"
 FONT_CANDIDATES = [
     resource_path("assets", "DejaVuSans.ttf"),
@@ -40,6 +41,7 @@ LINE_EXTRA_BY_PLACEHOLDER = {
     "{nick}": 150,
     "{dob}": 35,
     "{weight}": 8,
+    "{birthCount}": 22,
     "{birth_place}": 250,
 }
 BREED_NAME = "Арашан"
@@ -194,28 +196,27 @@ def _replace_placeholder(page, placeholder: str, value: str, fontname: str = "Ti
     fontfile = next((path for path in FONT_CANDIDATES if os.path.exists(path)), None)
     for rect in rects:
         page.draw_rect(rect, color=None, fill=(1, 1, 1), overlay=True)
-    if not text:
-        return
     for rect in rects:
         fontsize = max(min(rect.height * 0.85, 10), 8)
         text_y = rect.y1 - 3.4
         font_name = FONT_NAME if fontfile else "helv"
-        text_length = fitz.get_text_length(text, fontname="helv", fontsize=fontsize)
-        page.insert_text(
-            fitz.Point(rect.x0 + 1, text_y),
-            text,
-            fontsize=fontsize,
-            fontname=font_name,
-            fontfile=fontfile,
-            color=(0, 0, 0),
-            overlay=True,
-        )
+        text_length = fitz.get_text_length(text, fontname="helv", fontsize=fontsize) if text else 0
+        if text:
+            page.insert_text(
+                fitz.Point(rect.x0 + 1, text_y),
+                text,
+                fontsize=fontsize,
+                fontname=font_name,
+                fontfile=fontfile,
+                color=(0, 0, 0),
+                overlay=True,
+            )
         line_y = rect.y1 - 1.2
-        line_end_x = min(rect.x1, rect.x0 + 1 + text_length + 4)
         extra = LINE_EXTRA_BY_PLACEHOLDER.get(placeholder, 24)
+        line_end_x = min(rect.x1 + extra, max(rect.x1, rect.x0 + 1 + text_length + 4) + extra)
         page.draw_line(
             fitz.Point(rect.x0, line_y),
-            fitz.Point(min(rect.x1 + extra, line_end_x + extra), line_y),
+            fitz.Point(line_end_x, line_y),
             color=(0, 0, 0),
             width=0.6,
             overlay=True,
@@ -451,7 +452,7 @@ def _draw_main_page(pdf: canvas.Canvas, session, row: dict, owner, draw_backgrou
 
 def _build_face_pdf_page(row: dict, owner):
     sheep = row["sheep"]
-    application = row.get("latest_application")
+    lamb = getattr(sheep, "lamb", None)
     face_template_pdf, _ = _template_paths(sheep.gender or "O")
     doc = fitz.open(face_template_pdf)
     page = doc[0]
@@ -462,7 +463,8 @@ def _build_face_pdf_page(row: dict, owner):
         "{color}": getattr(getattr(sheep, "color", None), "name", "") or "",
         "{nick}": getattr(sheep, "nick", "") or "",
         "{dob}": _fmt_date(getattr(sheep, "dob", None)),
-        "{weight}": _fmt_number(getattr(application, "weight", None)),
+        "{weight}": _fmt_number(getattr(lamb, "weight", None)),
+        "{birthCount}": _fmt_number(getattr(lamb, "litter_size", None)),
         "{birth_place}": _owner_place(owner),
     }
     for placeholder, value in replacements.items():
@@ -650,6 +652,32 @@ def save_print_batch_size(batch_size: int):
         json.dump(current, fh, ensure_ascii=False, indent=2)
 
 
+def get_back_print_order():
+    if not os.path.exists(PRINT_SETTINGS_PATH):
+        return DEFAULT_BACK_PRINT_ORDER
+    try:
+        with open(PRINT_SETTINGS_PATH, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except Exception:
+        return DEFAULT_BACK_PRINT_ORDER
+    value = str(data.get("back_print_order", DEFAULT_BACK_PRINT_ORDER) or DEFAULT_BACK_PRINT_ORDER).strip()
+    return value if value in {"forward", "reverse"} else DEFAULT_BACK_PRINT_ORDER
+
+
+def save_back_print_order(order: str):
+    ensure_state_dir()
+    current = {}
+    if os.path.exists(PRINT_SETTINGS_PATH):
+        try:
+            with open(PRINT_SETTINGS_PATH, "r", encoding="utf-8") as fh:
+                current = json.load(fh)
+        except Exception:
+            current = {}
+    current["back_print_order"] = "reverse" if order == "reverse" else "forward"
+    with open(PRINT_SETTINGS_PATH, "w", encoding="utf-8") as fh:
+        json.dump(current, fh, ensure_ascii=False, indent=2)
+
+
 def get_pending_print_job():
     if not os.path.exists(PRINT_JOB_STATE_PATH):
         return None
@@ -689,6 +717,43 @@ def print_pdf_page_range(pdf_path: str, start_page: int, end_page: int, printer_
     selected_printer = printer_name if printer_name is not None else get_saved_printer()
 
     cmd = [lp_path, "-o", "media=A4", "-P", f"{start_page}-{end_page}"]
+    if selected_printer:
+        cmd.extend(["-d", selected_printer])
+    cmd.append(pdf_path)
+
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        message = (result.stderr or result.stdout or "Не удалось отправить на печать.").strip()
+        scheduler_probe = subprocess.run(
+            ["lpstat", "-p", "-d"],
+            capture_output=True,
+            text=True,
+        )
+        scheduler_status = (scheduler_probe.stderr or scheduler_probe.stdout or "").strip()
+        if "Scheduler is not running" in scheduler_status:
+            raise RuntimeError(
+                "Система печати CUPS не запущена. Запусти службу печати и проверь, что принтер добавлен."
+            )
+        if "no system default destination" in scheduler_status and not selected_printer:
+            raise RuntimeError(
+                "Не задан принтер по умолчанию. Добавь принтер в системе или выбери его явно."
+            )
+        raise RuntimeError(message)
+    return (result.stdout or "Документ отправлен на печать.").strip()
+
+
+def print_pdf_pages(pdf_path: str, pages: list[int], printer_name: str | None = None):
+    if not pages:
+        raise RuntimeError("Не выбраны страницы для печати.")
+    if min(pages) <= 0:
+        raise RuntimeError("Некорректные номера страниц для печати.")
+
+    lp_path = shutil.which("lp")
+    if lp_path is None:
+        raise RuntimeError("Не найдена команда lp для отправки на печать.")
+
+    selected_printer = printer_name if printer_name is not None else get_saved_printer()
+    cmd = [lp_path, "-o", "media=A4", "-P", ",".join(str(page) for page in pages)]
     if selected_printer:
         cmd.extend(["-d", selected_printer])
     cmd.append(pdf_path)

@@ -2,45 +2,52 @@ from sqlalchemy import func, or_
 
 
 def get_owner_rows(session, user_model, sheep_model, owner_model, query_text: str = "", region: str = ""):
-    rows = (
+    query_text = (query_text or "").strip()
+    region = (region or "").strip()
+
+    owner_link_counts = (
+        session.query(
+            owner_model.owner_id.label("owner_id"),
+            func.count(func.distinct(owner_model.sheep_id)).label("sheep_count"),
+        )
+        .join(sheep_model, sheep_model.id == owner_model.sheep_id)
+        .filter(sheep_model.is_deleted == False)
+        .group_by(owner_model.owner_id)
+        .subquery()
+    )
+
+    query = (
         session.query(
             user_model,
-            func.count(func.distinct(sheep_model.id)).label("sheep_count"),
+            func.coalesce(owner_link_counts.c.sheep_count, 0).label("sheep_count"),
         )
-        .outerjoin(owner_model, owner_model.owner_id == user_model.id)
-        .outerjoin(sheep_model, sheep_model.id == owner_model.sheep_id)
+        .outerjoin(owner_link_counts, owner_link_counts.c.owner_id == user_model.id)
         .filter(user_model.is_deleted == False)
-        .group_by(user_model.id)
+    )
+
+    if region:
+        query = query.filter(user_model.region == region)
+
+    if query_text:
+        like = f"%{query_text}%"
+        query = query.filter(
+            or_(
+                user_model.name.ilike(like),
+                user_model.username.ilike(like),
+                user_model.phone.ilike(like),
+                user_model.region.ilike(like),
+                user_model.area.ilike(like),
+                user_model.city.ilike(like),
+                user_model.home.ilike(like),
+            )
+        )
+
+    rows = (
+        query
         .order_by(user_model.name.asc(), user_model.id.desc())
         .all()
     )
-
-    query_text = (query_text or "").strip().casefold()
-    region = (region or "").strip()
-    result = []
-    for user, sheep_count in rows:
-        if region and (user.region or "") != region:
-            continue
-        haystack = " ".join(
-            [
-                str(user.name or ""),
-                str(user.username or ""),
-                str(user.phone or ""),
-                str(user.region or ""),
-                str(user.area or ""),
-                str(user.city or ""),
-                str(user.home or ""),
-            ]
-        ).casefold()
-        if query_text and query_text not in haystack:
-            continue
-        result.append(
-            {
-                "user": user,
-                "sheep_count": int(sheep_count or 0),
-            }
-        )
-    return result
+    return [{"user": user, "sheep_count": int(sheep_count or 0)} for user, sheep_count in rows]
 
 
 def get_owner_regions(session, user_model):
@@ -64,47 +71,42 @@ def get_sheep_rows(
     paid: str = "",
     synced: str = "",
 ):
-    rows = (
-        session.query(sheep_model)
+    query_text = (query_text or "").strip()
+    query = (
+        session.query(sheep_model, user_model.name.label("owner_name"), color_model.name.label("color_name"))
         .outerjoin(user_model, sheep_model.owner_id == user_model.id)
         .outerjoin(color_model, sheep_model.color_id == color_model.id)
         .filter(sheep_model.is_deleted == False)
-        .order_by(sheep_model.id.desc())
-        .all()
     )
 
-    query_text = (query_text or "").strip().casefold()
-    result = []
-    for sheep in rows:
-        if gender and (sheep.gender or "") != gender:
-            continue
-        if paid == "paid" and not bool(getattr(sheep, "is_paid", False)):
-            continue
-        if paid == "unpaid" and bool(getattr(sheep, "is_paid", False)):
-            continue
-        if synced == "synced" and not bool(getattr(sheep, "synced", False)):
-            continue
-        if synced == "unsynced" and bool(getattr(sheep, "synced", False)):
-            continue
+    if gender:
+        query = query.filter(sheep_model.gender == gender)
+    if paid == "paid":
+        query = query.filter(sheep_model.is_paid == True)
+    elif paid == "unpaid":
+        query = query.filter(sheep_model.is_paid == False)
+    if synced == "synced":
+        query = query.filter(sheep_model.synced == True)
+    elif synced == "unsynced":
+        query = query.filter(sheep_model.synced == False)
 
-        owner = getattr(sheep, "owner", None)
-        color = getattr(getattr(sheep, "color", None), "name", "") or ""
-        haystack = " ".join(
-            [
-                str(sheep.id_n or ""),
-                str(sheep.nick or ""),
-                str(owner.name if owner else ""),
-                str(color),
-            ]
-        ).casefold()
-        if query_text and query_text not in haystack:
-            continue
-
-        result.append(
-            {
-                "sheep": sheep,
-                "owner_name": str(owner.name or "") if owner else "",
-                "color_name": color,
-            }
+    if query_text:
+        like = f"%{query_text}%"
+        query = query.filter(
+            or_(
+                sheep_model.id_n.ilike(like),
+                sheep_model.nick.ilike(like),
+                user_model.name.ilike(like),
+                color_model.name.ilike(like),
+            )
         )
-    return result
+
+    rows = query.order_by(sheep_model.id.desc()).all()
+    return [
+        {
+            "sheep": sheep,
+            "owner_name": str(owner_name or ""),
+            "color_name": str(color_name or ""),
+        }
+        for sheep, owner_name, color_name in rows
+    ]

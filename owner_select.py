@@ -3,7 +3,7 @@ import os
 from auth_state import AuthState
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
-    QPushButton, QListWidget, QListWidgetItem, QMessageBox
+    QPushButton, QListWidget, QListWidgetItem, QMessageBox, QFrame
 )
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QPalette, QColor, QKeySequence
@@ -107,8 +107,23 @@ class OwnerSelect(QMainWindow):
         self.list_owners = QListWidget()
         # шрифт списка покрупнее
         self.list_owners.setObjectName("ownersList")              # задаём id
-        self.list_owners.setStyleSheet("#ownersList { font-size: 18px; }")
-        self.list_owners.setSpacing(4)  # пусть отступы останутся
+        self.list_owners.setStyleSheet(
+            """
+            #ownersList {
+                font-size: 16px;
+                border: 1px solid #e5e7eb;
+                background: #ffffff;
+            }
+            #ownersList::item {
+                padding: 0px;
+                margin: 0px;
+            }
+            #ownersList::item:selected {
+                background: #dbeafe;
+            }
+            """
+        )
+        self.list_owners.setSpacing(0)
         self.list_owners.setUniformItemSizes(False)
         self.list_owners.itemDoubleClicked.connect(lambda _: self.continue_with_owner())
         v.addWidget(self.list_owners, 1)
@@ -173,10 +188,11 @@ class OwnerSelect(QMainWindow):
             return
 
         for o in owners:
-            item = QListWidgetItem(format_owner_display(o))
+            item = QListWidgetItem()
             item.setData(Qt.UserRole, o.id)
-            item.setSizeHint(QSize(0, 88))
+            item.setSizeHint(QSize(0, 98))
             self.list_owners.addItem(item)
+            self.list_owners.setItemWidget(item, self._build_owner_item_widget(o))
 
         self.statusBar().showMessage(f"Найдено: {len(owners)}")
 
@@ -187,6 +203,42 @@ class OwnerSelect(QMainWindow):
     def clear_search(self):
         self.input_search.clear()
         self.input_search.setFocus()
+
+    def _build_owner_item_widget(self, owner):
+        card = QWidget()
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(14, 12, 14, 8)
+        layout.setSpacing(6)
+
+        lines = format_owner_display(owner).splitlines()
+        name_text = lines[0] if lines else (owner.name or "Без имени")
+        details_text = lines[1] if len(lines) > 1 else ""
+        meta_text = lines[2] if len(lines) > 2 else ""
+
+        lbl_name = QLabel(name_text)
+        name_font = lbl_name.font()
+        name_font.setBold(True)
+        name_font.setPointSize(name_font.pointSize() + 1)
+        lbl_name.setFont(name_font)
+        lbl_name.setStyleSheet("color: #111827;")
+        layout.addWidget(lbl_name)
+
+        lbl_details = QLabel(details_text)
+        lbl_details.setWordWrap(True)
+        lbl_details.setStyleSheet("color: #374151;")
+        layout.addWidget(lbl_details)
+
+        lbl_meta = QLabel(meta_text)
+        lbl_meta.setWordWrap(True)
+        lbl_meta.setStyleSheet("color: #6b7280;")
+        layout.addWidget(lbl_meta)
+
+        divider = QFrame()
+        divider.setFrameShape(QFrame.HLine)
+        divider.setFrameShadow(QFrame.Plain)
+        divider.setStyleSheet("color: #e5e7eb; background: #e5e7eb; max-height: 1px;")
+        layout.addWidget(divider)
+        return card
 
     def add_owner(self):
         dlg = OwnerCreateDialog(self)

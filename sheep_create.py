@@ -21,10 +21,10 @@ from sheep_picker_dialog import SheepPickerDialog
 
 # БД-модели
 try:
-    from db.models import Sheep, Color, User, Application, Owner
+    from db.models import Sheep, Color, User, Application, Owner, Lamb
     db = get_db()
 except Exception as e:
-    db = None; Sheep = None; Color = None; User = None; Application = None; Owner = None
+    db = None; Sheep = None; Color = None; User = None; Application = None; Owner = None; Lamb = None
     _db_error = str(e)
 else:
     _db_error = None
@@ -113,7 +113,7 @@ class SheepCreateWindow(QMainWindow):
         gb_pedig = self._build_pedigree_group()
         top_row.addWidget(gb_ident, 1)
         top_row.addWidget(gb_pedig, 1)
-        self.chk_app, self.gb_app = self._build_application_section(main)
+        self.chk_app, self.gb_app, self.gb_lamb = self._build_application_section(main)
         container_layout.addWidget(self._build_actions_bar())
         self._connect_ui_signals()
 
@@ -414,11 +414,36 @@ class SheepCreateWindow(QMainWindow):
         form.addRow(self._lab("Классность"), self.cb_rank)
         form.addRow(self._lab("Примечание"), self.txt_note)
 
+        lamb_group = QGroupBox("Данные ягнёнка")
+        parent_layout.addWidget(lamb_group, 0)
+        lamb_layout = QFormLayout()
+        lamb_layout.setHorizontalSpacing(16)
+        lamb_layout.setVerticalSpacing(8)
+        lamb_group.setLayout(lamb_layout)
+
+        self.sp_lamb_weight = QDoubleSpinBox()
+        self.sp_lamb_weight.setRange(0, 120)
+        self.sp_lamb_weight.setDecimals(1)
+        self.sp_lamb_weight.setSingleStep(0.5)
+        self.sp_lamb_weight.setSpecialValueText("—")
+        self.sp_lamb_weight.setValue(0)
+        self.sp_lamb_weight.setSuffix(" кг")
+
+        self.sp_litter_size = QSpinBox()
+        self.sp_litter_size.setRange(0, 4)
+        self.sp_litter_size.setSpecialValueText("—")
+        self.sp_litter_size.setValue(0)
+
+        lamb_layout.addRow(self._lab("Вес ягнёнка"), self.sp_lamb_weight)
+        lamb_layout.addRow(self._lab("В числе сколько родился"), self.sp_litter_size)
+
         group.setVisible(False)
         group.setMaximumHeight(0)
+        lamb_group.setVisible(True)
+        lamb_group.setMaximumHeight(lamb_group.sizeHint().height())
         checkbox.toggled.connect(self._toggle_app_section)
         self._set_app_enabled(False)
-        return checkbox, group
+        return checkbox, group, lamb_group
 
     def _lab(self, text):
         l = QLabel(text); l.setObjectName("formlabel"); l.setProperty("class", "formlabel"); return l
@@ -444,8 +469,14 @@ class SheepCreateWindow(QMainWindow):
         # плавное раскрытие/свертывание
         self._set_app_enabled(on)
         gb = self.gb_app
+        lamb_gb = self.gb_lamb
         if on:
             gb.setVisible(True)
+            lamb_gb.setVisible(False)
+            lamb_gb.setMaximumHeight(0)
+        else:
+            lamb_gb.setVisible(True)
+            lamb_gb.setMaximumHeight(lamb_gb.sizeHint().height())
         start_h = gb.maximumHeight() if gb.maximumHeight() > 0 else 0
         end_h = gb.sizeHint().height() if on else 0
         self._app_anim = QPropertyAnimation(gb, b"maximumHeight")
@@ -604,6 +635,7 @@ class SheepCreateWindow(QMainWindow):
         self.txt_comment.setPlainText(sheep.comment or "")
         self.chk_app.setChecked(False)
         self._reset_application_fields()
+        self._prefill_lamb_fields(getattr(sheep, "lamb", None))
 
     def load_for_edit(self, sheep_id: int, application_id: int = None):
         if db is None or Sheep is None:
@@ -666,6 +698,13 @@ class SheepCreateWindow(QMainWindow):
         self.sp_exterior.setValue(int(application.exterior or 1))
         self.txt_note.setPlainText(application.note or "")
 
+    def _prefill_lamb_fields(self, lamb):
+        if lamb is None:
+            self._reset_lamb_fields()
+            return
+        self.sp_lamb_weight.setValue(float(getattr(lamb, "weight", None) or 0))
+        self.sp_litter_size.setValue(int(getattr(lamb, "litter_size", None) or 0))
+
     def _reset_application_fields(self):
         for sp in (
             self.sp_weight, self.sp_crest_height, self.sp_sacrum_height, self.sp_oblique_torso,
@@ -680,6 +719,10 @@ class SheepCreateWindow(QMainWindow):
         self.cb_fur.setCurrentIndex(0)
         self.cb_rank.setCurrentIndex(0)
         self.txt_note.clear()
+
+    def _reset_lamb_fields(self):
+        self.sp_lamb_weight.setValue(0)
+        self.sp_litter_size.setValue(0)
 
     # ---------- Валидация ----------
     def _validate_owner(self) -> bool:
@@ -757,6 +800,37 @@ class SheepCreateWindow(QMainWindow):
                 return False
         return True
 
+    def _build_lamb_payload(self):
+        if self.chk_app.isChecked():
+            return None
+        weight = self._val_or_none(self.sp_lamb_weight)
+        litter_size = int(self.sp_litter_size.value()) if self.sp_litter_size.value() > 0 else None
+        if weight is None and litter_size is None:
+            return None
+        return {
+            "weight": weight,
+            "litter_size": litter_size,
+            "created_by_user_id": (AuthState.user or {}).get("id"),
+            "created_by_guest": AuthState.user is None,
+        }
+
+    def _validate_lamb_fields(self) -> bool:
+        if self.chk_app.isChecked():
+            return True
+        if self.sp_lamb_weight.value() < 0:
+            QMessageBox.warning(self, "Ошибка", "Вес ягнёнка не может быть меньше нуля")
+            self.sp_lamb_weight.setFocus()
+            return False
+        if self.sp_lamb_weight.value() > 0 and self.sp_lamb_weight.value() <= 0:
+            QMessageBox.warning(self, "Ошибка", "Вес ягнёнка должен быть больше нуля")
+            self.sp_lamb_weight.setFocus()
+            return False
+        if self.sp_litter_size.value() not in (0, 1, 2, 3, 4):
+            QMessageBox.warning(self, "Ошибка", "Поле 'в числе сколько родился' должно быть от 1 до 4")
+            self.sp_litter_size.setFocus()
+            return False
+        return True
+
     def _validate(self) -> bool:
         if db is None or Sheep is None:
             QMessageBox.critical(self, "БД", _db_error or "Недоступна")
@@ -769,6 +843,8 @@ class SheepCreateWindow(QMainWindow):
         if not self._validate_main_fields():
             return False
         if not self._validate_application_fields():
+            return False
+        if not self._validate_lamb_fields():
             return False
 
         return True
@@ -838,6 +914,7 @@ class SheepCreateWindow(QMainWindow):
             "hide": self.chk_hide.isChecked() if hasattr(self, "chk_hide") else False,
             "created_by_guest": AuthState.user is None,
             "application": self._build_application_payload(date_filling),
+            "lamb": self._build_lamb_payload(),
         }
 
     # ---------- Сохранение ----------
@@ -897,6 +974,7 @@ class SheepCreateWindow(QMainWindow):
         if hasattr(self, "chk_hide"):
             self.chk_hide.setChecked(False)
         self._reset_application_fields()
+        self._reset_lamb_fields()
         self.ed_idn.setFocus()
 
     # ---------- Навигация ----------
