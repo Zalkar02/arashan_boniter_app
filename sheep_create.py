@@ -811,7 +811,6 @@ class SheepCreateWindow(QMainWindow):
             "weight": weight,
             "litter_size": litter_size,
             "created_by_user_id": (AuthState.user or {}).get("id"),
-            "created_by_guest": AuthState.user is None,
         }
 
     def _validate_lamb_fields(self) -> bool:

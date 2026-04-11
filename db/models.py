@@ -199,22 +199,49 @@ def _get_columns(conn, table_name):
 def _ensure_local_columns(engine):
     required = {
         "users": {
+            "password": "VARCHAR",
+            "region": "VARCHAR",
+            "area": "VARCHAR",
+            "city": "VARCHAR",
+            "home": "VARCHAR",
+            "username": "VARCHAR",
             "created_by_user_id": "INTEGER",
             "is_deleted": "BOOLEAN DEFAULT 0",
         },
+        "colors": {
+            "is_deleted": "BOOLEAN DEFAULT 0",
+        },
         "sheep": {
+            "price": "NUMERIC",
+            "currency": "VARCHAR(1) DEFAULT 'K'",
+            "is_negotiable_price": "BOOLEAN DEFAULT 0",
+            "sell": "BOOLEAN DEFAULT 0",
+            "out": "BOOLEAN DEFAULT 0",
+            "hide": "BOOLEAN DEFAULT 0",
+            "boniter": "INTEGER",
             "created_by_user_id": "INTEGER",
             "created_by_guest": "BOOLEAN DEFAULT 0",
             "payment_reference": "TEXT",
             "payment_token": "TEXT",
+            "is_paid": "BOOLEAN DEFAULT 0",
             "is_printed": "BOOLEAN DEFAULT 0",
+            "is_deleted": "BOOLEAN DEFAULT 0",
         },
         "applications": {
+            "size": "VARCHAR",
+            "fur_structure": "VARCHAR",
+            "boniter": "INTEGER",
             "created_by_user_id": "INTEGER",
             "created_by_guest": "BOOLEAN DEFAULT 0",
             "payment_reference": "TEXT",
             "payment_token": "TEXT",
+            "is_paid": "BOOLEAN DEFAULT 0",
             "is_printed": "BOOLEAN DEFAULT 0",
+            "is_deleted": "BOOLEAN DEFAULT 0",
+        },
+        "lambs": {
+            "created_by_user_id": "INTEGER",
+            "is_deleted": "BOOLEAN DEFAULT 0",
         },
     }
 
@@ -228,6 +255,21 @@ def _ensure_local_columns(engine):
                     )
 
 
+def _ensure_local_indexes(engine):
+    index_sql = [
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users(username)",
+        "CREATE INDEX IF NOT EXISTS idx_sheep_owner_id ON sheep(owner_id)",
+        "CREATE INDEX IF NOT EXISTS idx_sheep_id_n ON sheep(id_n)",
+        "CREATE INDEX IF NOT EXISTS idx_applications_sheep_id ON applications(sheep_id)",
+        "CREATE INDEX IF NOT EXISTS idx_owners_owner_id ON owners(owner_id)",
+        "CREATE INDEX IF NOT EXISTS idx_owners_sheep_id ON owners(sheep_id)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_lambs_sheep_id ON lambs(sheep_id)",
+    ]
+    with engine.begin() as conn:
+        for sql in index_sql:
+            conn.execute(text(sql))
+
+
 # 📦 Инициализация базы
 def init_db(path=None):
     if path is None:
@@ -235,4 +277,5 @@ def init_db(path=None):
     engine = create_engine(f"sqlite:///{path}")
     Base.metadata.create_all(engine)
     _ensure_local_columns(engine)
+    _ensure_local_indexes(engine)
     return sessionmaker(bind=engine)()

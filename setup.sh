@@ -18,6 +18,7 @@ fi
 
 "$VENV_DIR/bin/python" -m pip install --upgrade pip
 "$VENV_DIR/bin/pip" install -r requirements.txt
+"$VENV_DIR/bin/python" migrate_local_db.py
 
 echo
 echo "Setup complete."
