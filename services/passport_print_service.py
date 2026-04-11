@@ -91,6 +91,21 @@ def _fmt_number(value):
 def _animal_type_label(gender):
     return "БАРАН" if gender == "B" else "ОВЦЕМАТКА"
 
+def _feminize_color(color_name: str) -> str:
+    if not color_name:
+        return ""
+    name = color_name.strip()
+    lower = name.lower()
+    if lower.endswith(("ая", "яя")):
+        return name
+    if lower.endswith("ый"):
+        return name[:-2] + "ая"
+    if lower.endswith("ий"):
+        return name[:-2] + "яя"
+    if lower.endswith("ой"):
+        return name[:-2] + "ая"
+    return name
+
 
 def _size_label(value):
     return {
@@ -458,10 +473,14 @@ def _build_face_pdf_page(row: dict, owner):
     doc = fitz.open(face_template_pdf)
     page = doc[0]
 
+    color_name = getattr(getattr(sheep, "color", None), "name", "") or ""
+    if (sheep.gender or "O") == "O":
+        color_name = _feminize_color(color_name)
+
     replacements = {
         "{id_n}": getattr(sheep, "id_n", "") or "",
         "{breed}": BREED_NAME,
-        "{color}": getattr(getattr(sheep, "color", None), "name", "") or "",
+        "{color}": color_name,
         "{nick}": getattr(sheep, "nick", "") or "",
         "{dob}": _fmt_date(getattr(sheep, "dob", None)),
         "{weight}": _fmt_number(getattr(lamb, "weight", None)),
@@ -566,8 +585,6 @@ def generate_passports_pdf(session, rows: Iterable[dict], owner=None):
         front_pages.append(template_page)
 
         back_template_page = _build_back_pdf_page(row)
-        second_page = _build_overlay_page(_draw_second_page, session, row, owner)
-        back_template_page.merge_page(second_page)
         back_pages.append(back_template_page)
 
     for page in front_pages:
