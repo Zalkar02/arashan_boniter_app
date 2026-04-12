@@ -20,6 +20,13 @@ fi
 "$VENV_DIR/bin/pip" install -r requirements.txt
 "$VENV_DIR/bin/python" migrate_local_db.py
 
+if [[ -f "$PROJECT_DIR/.app_state/print_settings.example.json" && ! -f "$PROJECT_DIR/.app_state/print_settings.json" ]]; then
+  cp "$PROJECT_DIR/.app_state/print_settings.example.json" "$PROJECT_DIR/.app_state/print_settings.json"
+fi
+if [[ -f "$PROJECT_DIR/sheep_local.example.db" && ! -f "$PROJECT_DIR/sheep_local.db" ]]; then
+  cp "$PROJECT_DIR/sheep_local.example.db" "$PROJECT_DIR/sheep_local.db"
+fi
+
 echo
 echo "Setup complete."
 echo "Run the app with: bash run.sh"

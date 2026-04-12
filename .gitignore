@@ -142,3 +142,5 @@ GitHub.sublime-settings
 .app_state/tokens.json
 .app_state/user.json
 .app_state/exports/
+.app_state/print_settings.json
+sheep_local.db

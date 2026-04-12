@@ -1,5 +1,4 @@
 {
-  "printer_name": "Pantum_P2500W-series",
   "print_batch_size": 20,
   "back_print_order": "reverse"
 }

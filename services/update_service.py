@@ -23,6 +23,31 @@ def _run_git(*args: str) -> str:
     return (result.stdout or "").strip()
 
 
+def _python_bin() -> str:
+    candidates = [
+        PROJECT_ROOT / ".venv" / "bin" / "python",
+        PROJECT_ROOT / "env" / "bin" / "python",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate)
+    return "python3"
+
+
+def _run_python(*args: str) -> str:
+    result = subprocess.run(
+        [_python_bin(), *args],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        message = (result.stderr or result.stdout or "python command failed").strip()
+        raise UpdateError(message)
+    return (result.stdout or "").strip()
+
+
 def check_for_updates():
     current_branch = _run_git("branch", "--show-current")
     dirty = bool(_run_git("status", "--porcelain"))
@@ -47,9 +72,11 @@ def pull_updates():
     if status["dirty"]:
         raise UpdateError("Есть локальные изменения. Сначала закоммитьте или уберите их.")
     output = _run_git("pull", "origin", "main")
+    migrate_output = _run_python("migrate_local_db.py")
     refreshed = check_for_updates()
     return {
         "output": output,
+        "migrate_output": migrate_output,
         "before": status,
         "after": refreshed,
     }

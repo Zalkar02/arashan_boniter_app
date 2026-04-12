@@ -17,5 +17,8 @@ if [[ -z "$VENV_PYTHON" ]]; then
 fi
 
 cd "$PROJECT_DIR"
+if [[ -f "$PROJECT_DIR/sheep_local.example.db" && ! -f "$PROJECT_DIR/sheep_local.db" ]]; then
+  cp "$PROJECT_DIR/sheep_local.example.db" "$PROJECT_DIR/sheep_local.db"
+fi
 "$VENV_PYTHON" migrate_local_db.py
 exec "$VENV_PYTHON" app.py
