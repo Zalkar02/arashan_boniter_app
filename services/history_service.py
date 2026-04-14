@@ -92,7 +92,12 @@ def get_owner_history_rows(session, application_model, sheep_model, owner_model,
         else:
             bucket["sheep_without_applications"] += 1
 
-        if sheep.date_filling and sheep.date_filling >= recent_since:
+        app_recent_date = getattr(app_stats, "latest_date", None) if app_stats else None
+        sheep_recent_date = getattr(sheep, "date_filling", None)
+        effective_recent_date = sheep_recent_date
+        if app_recent_date and (effective_recent_date is None or app_recent_date > effective_recent_date):
+            effective_recent_date = app_recent_date
+        if effective_recent_date and effective_recent_date >= recent_since:
             bucket["recent_sheep"] += 1
 
         if app_stats and app_stats.has_unpaid:

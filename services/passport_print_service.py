@@ -35,7 +35,7 @@ FONT_CANDIDATES = [
     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
     "/usr/share/fonts/TTF/DejaVuSans.ttf",
 ]
-LINE_EXTRA_BY_PLACEHOLDER = {
+FRONT_LINE_EXTRA_BY_PLACEHOLDER = {
     "{id_n}": 70,
     "{breed}": 50,
     "{color}": 70,
@@ -45,6 +45,19 @@ LINE_EXTRA_BY_PLACEHOLDER = {
     "{birthCount}": 22,
     "{birth_place}": 250,
 }
+FRONT_LINE_STROKE_WIDTH = 0.6
+
+BACK_LINE_EXTRA_BY_PLACEHOLDER = {
+    "{id}": 20,
+    "{nick}": 40,
+    "{name}": 40,
+    "{breed}": 20,
+}
+BACK_LINE_STROKE_WIDTH = 0.4
+
+# Backward-compatible aliases used by test_generate_back_pdf.py.
+LINE_EXTRA_BY_PLACEHOLDER = BACK_LINE_EXTRA_BY_PLACEHOLDER
+LINE_STROKE_WIDTH = BACK_LINE_STROKE_WIDTH
 BREED_NAME = "Арашан"
 SUBTYPE_NAME = "мясо-сальных овец"
 FACE_TEMPLATE_PDF_EWE = os.path.join(TEMPLATE_DIR, "face_page1_no_tables.pdf")
@@ -218,7 +231,14 @@ def _draw_text(pdf: canvas.Canvas, x_mm: float, y_mm: float, value, size: int = 
     pdf.drawString(mm(x_mm), mm(y_mm), text)
 
 
-def _replace_placeholder(page, placeholder: str, value: str, fontname: str = "Times-Roman"):
+def _replace_placeholder(
+    page,
+    placeholder: str,
+    value: str,
+    fontname: str = "Times-Roman",
+    line_map=None,
+    line_width=None,
+):
     rects = page.search_for(placeholder)
     if not rects:
         return
@@ -242,13 +262,22 @@ def _replace_placeholder(page, placeholder: str, value: str, fontname: str = "Ti
                 overlay=True,
             )
         line_y = rect.y1 - 1.2
-        extra = LINE_EXTRA_BY_PLACEHOLDER.get(placeholder, 24)
+        active_line_map = line_map or LINE_EXTRA_BY_PLACEHOLDER
+        active_line_width = LINE_STROKE_WIDTH if line_width is None else line_width
+        if placeholder.endswith("_id}"):
+            extra = active_line_map.get("{id}", active_line_map.get(placeholder, 24))
+        elif placeholder.endswith("_nick}") or placeholder.endswith("_name}"):
+            extra = active_line_map.get("{nick}", active_line_map.get(placeholder, 24))
+        elif placeholder.endswith("_breed}"):
+            extra = active_line_map.get("{breed}", active_line_map.get(placeholder, 24))
+        else:
+            extra = active_line_map.get(placeholder, 24)
         line_end_x = min(rect.x1 + extra, max(rect.x1, rect.x0 + 1 + text_length + 4) + extra)
         page.draw_line(
             fitz.Point(rect.x0, line_y),
             fitz.Point(line_end_x, line_y),
             color=(0, 0, 0),
-            width=0.6,
+            width=active_line_width,
             overlay=True,
         )
 
@@ -502,7 +531,13 @@ def _build_face_pdf_page(row: dict, owner):
         "{birth_place}": _owner_place(owner),
     }
     for placeholder, value in replacements.items():
-        _replace_placeholder(page, placeholder, value)
+        _replace_placeholder(
+            page,
+            placeholder,
+            value,
+            line_map=FRONT_LINE_EXTRA_BY_PLACEHOLDER,
+            line_width=FRONT_LINE_STROKE_WIDTH,
+        )
 
     pdf_bytes = doc.tobytes()
     doc.close()
@@ -524,13 +559,81 @@ def _build_overlay_page(draw_fn, *args):
 
 
 def _draw_genealogy_block(pdf: canvas.Canvas, sheep, x_mm: float, y_mm: float, label_mode: str = "full"):
-    _draw_text(pdf, x_mm, y_mm, getattr(sheep, "id_n", ""), 9)
-    if label_mode == "full":
-        _draw_text(pdf, x_mm, y_mm - 8, getattr(sheep, "nick", ""), 9)
-        _draw_text(pdf, x_mm, y_mm - 16, BREED_NAME, 9)
-    else:
-        _draw_text(pdf, x_mm, y_mm - 8, getattr(sheep, "nick", ""), 9)
-        _draw_text(pdf, x_mm, y_mm - 16, BREED_NAME, 9)
+    raw_id = str(getattr(sheep, "id_n", "") or "").strip()
+    digits = "".join(ch for ch in raw_id if ch.isdigit())
+    short_id = (digits or raw_id)[-6:] if (digits or raw_id) else ""
+    _draw_text(pdf, x_mm, y_mm, short_id, 9)
+    nick = str(getattr(sheep, "nick", "") or "").strip()
+    if nick:
+        _draw_text(pdf, x_mm, y_mm - 8, nick, 9)
+    _draw_text(pdf, x_mm, y_mm - 16, BREED_NAME, 9)
+
+
+def _short_id(value: str) -> str:
+    raw = str(value or "").strip()
+    digits = "".join(ch for ch in raw if ch.isdigit())
+    core = digits or raw
+    return core[-6:] if core else ""
+
+
+def _draw_text_in_bbox(pdf: canvas.Canvas, bbox, text: str, size: int = 9, pad_x: float = 2.0):
+    if not text:
+        return
+    x0, y0, x1, y1 = bbox
+    height = max(0.0, y1 - y0)
+    baseline = PAGE_HEIGHT - y1 + (height * 0.25)
+    pdf.setFont(FONT_NAME, size)
+    pdf.drawString(x0 + pad_x, baseline, text)
+
+
+_BACK_GENEALOGY_CACHE = {}
+
+
+def _get_back_genealogy_layout(template_path: str):
+    cached = _BACK_GENEALOGY_CACHE.get(template_path)
+    if cached is not None:
+        return cached
+    doc = fitz.open(template_path)
+    page = doc[0]
+    id_blocks = []
+    nick_blocks = []
+    for b in page.get_text("blocks"):
+        x0, y0, x1, y1, text, *_ = b
+        t = " ".join(text.split())
+        if not t:
+            continue
+        if t.startswith("Индивидуальный №") and "____" in t:
+            id_blocks.append((x0, y0, x1, y1))
+        if t.startswith("Кличка") and "____" in t:
+            nick_blocks.append((x0, y0, x1, y1))
+    id_blocks = sorted(id_blocks, key=lambda b: (b[1], b[0]))
+    nick_blocks = sorted(nick_blocks, key=lambda b: (b[1], b[0]))
+
+    used_nicks = set()
+    nick_for_id = {}
+    for idx, ibox in enumerate(id_blocks):
+        best = None
+        best_dist = None
+        for nbox in nick_blocks:
+            if nbox in used_nicks:
+                continue
+            if abs(nbox[0] - ibox[0]) > 12:
+                continue
+            dy = nbox[1] - ibox[3]
+            if dy < -2 or dy > 30:
+                continue
+            dist = abs(dy)
+            if best is None or dist < best_dist:
+                best = nbox
+                best_dist = dist
+        if best is not None:
+            nick_for_id[idx] = best
+            used_nicks.add(best)
+
+    layout = {"id": id_blocks, "nick": nick_for_id}
+    doc.close()
+    _BACK_GENEALOGY_CACHE[template_path] = layout
+    return layout
 
 
 def _draw_second_page(pdf: canvas.Canvas, session, row: dict, owner):
@@ -542,31 +645,18 @@ def _draw_second_page(pdf: canvas.Canvas, session, row: dict, owner):
     mother_father = _get_parent(mother, "B") if mother else None
     mother_mother = _get_parent(mother, "O") if mother else None
 
-    if father:
-        _draw_genealogy_block(pdf, father, 29, 167)
-    if father_father:
-        _draw_genealogy_block(pdf, father_father, 96, 167)
-    if father_mother:
-        _draw_genealogy_block(pdf, father_mother, 96, 133)
-    if mother:
-        _draw_genealogy_block(pdf, mother, 29, 124)
-    if mother_father:
-        _draw_genealogy_block(pdf, mother_father, 96, 124)
-    if mother_mother:
-        _draw_genealogy_block(pdf, mother_mother, 96, 98)
-
-    latest_application = row.get("latest_application")
-    if latest_application:
-        _draw_text(pdf, 182, 124, _fmt_number(latest_application.weight), 8)
-        _draw_text(pdf, 191, 124, _fmt_number(latest_application.crest_height), 8)
-        _draw_text(pdf, 199.5, 124, _fmt_number(latest_application.sacrum_height), 8)
-        _draw_text(pdf, 208, 124, _fmt_number(latest_application.oblique_torso), 8)
-        _draw_text(pdf, 216.5, 124, _fmt_number(latest_application.chest_width), 8)
-        _draw_text(pdf, 225, 124, _fmt_number(latest_application.chest_depth), 8)
-        _draw_text(pdf, 234.0, 124, _fmt_number(latest_application.chest_girth), 8)
-        _draw_text(pdf, 242.5, 124, _fmt_number(latest_application.kurdyk_girth), 8)
-        _draw_text(pdf, 251.5, 124, _fmt_number(latest_application.kurdyk_form), 8)
-        _draw_text(pdf, 260.0, 124, _fmt_number(latest_application.pasterns_girth), 8)
+    _, back_template_pdf = _template_paths(sheep.gender or "O")
+    layout = _get_back_genealogy_layout(back_template_pdf)
+    id_boxes = layout.get("id", [])
+    nick_boxes = layout.get("nick", {})
+    ancestors = [father, father_father, father_mother, mother, mother_father, mother_mother]
+    for idx, ancestor in enumerate(ancestors):
+        if ancestor is None or idx >= len(id_boxes):
+            continue
+        _draw_text_in_bbox(pdf, id_boxes[idx], _short_id(getattr(ancestor, "id_n", "")), 9)
+        nick_box = nick_boxes.get(idx)
+        if nick_box is not None:
+            _draw_text_in_bbox(pdf, nick_box, str(getattr(ancestor, "nick", "") or "").strip(), 9)
 
     _draw_text(pdf, 5, 6, "", 8)
 
@@ -574,7 +664,52 @@ def _draw_second_page(pdf: canvas.Canvas, session, row: dict, owner):
 def _build_back_pdf_page(row: dict):
     sheep = row["sheep"]
     _, back_template_pdf = _template_paths(sheep.gender or "O")
-    return PdfReader(back_template_pdf).pages[0]
+    doc = fitz.open(back_template_pdf)
+    page = doc[0]
+    father = _get_parent(sheep, "B")
+    mother = _get_parent(sheep, "O")
+    father_father = _get_parent(father, "B") if father else None
+    father_mother = _get_parent(father, "O") if father else None
+    mother_father = _get_parent(mother, "B") if mother else None
+    mother_mother = _get_parent(mother, "O") if mother else None
+    replacements = {
+        "{breed}": BREED_NAME,
+        "{f_breed}": BREED_NAME if father else "",
+        "{m_breed}": BREED_NAME if mother else "",
+        "{f_id}": _short_id(getattr(father, "id_n", "")) if father else "",
+        "{f_nick}": str(getattr(father, "nick", "") or "") if father else "",
+        "{f_name}": str(getattr(father, "nick", "") or "") if father else "",
+        "{m_id}": _short_id(getattr(mother, "id_n", "")) if mother else "",
+        "{m_nick}": str(getattr(mother, "nick", "") or "") if mother else "",
+        "{m_name}": str(getattr(mother, "nick", "") or "") if mother else "",
+        "{f_f_id}": _short_id(getattr(father_father, "id_n", "")) if father_father else "",
+        "{f_f_nick}": str(getattr(father_father, "nick", "") or "") if father_father else "",
+        "{f_f_name}": str(getattr(father_father, "nick", "") or "") if father_father else "",
+        "{f_f_breed}": BREED_NAME if father_father else "",
+        "{m_f_id}": _short_id(getattr(father_mother, "id_n", "")) if father_mother else "",
+        "{m_f_nick}": str(getattr(father_mother, "nick", "") or "") if father_mother else "",
+        "{m_f_name}": str(getattr(father_mother, "nick", "") or "") if father_mother else "",
+        "{m_f_breed}": BREED_NAME if father_mother else "",
+        "{f_m_id}": _short_id(getattr(mother_father, "id_n", "")) if mother_father else "",
+        "{f_m_nick}": str(getattr(mother_father, "nick", "") or "") if mother_father else "",
+        "{f_m_name}": str(getattr(mother_father, "nick", "") or "") if mother_father else "",
+        "{f_m_breed}": BREED_NAME if mother_father else "",
+        "{m_m_id}": _short_id(getattr(mother_mother, "id_n", "")) if mother_mother else "",
+        "{m_m_nick}": str(getattr(mother_mother, "nick", "") or "") if mother_mother else "",
+        "{m_m_name}": str(getattr(mother_mother, "nick", "") or "") if mother_mother else "",
+        "{m_m_breed}": BREED_NAME if mother_mother else "",
+    }
+    for placeholder, value in replacements.items():
+        _replace_placeholder(
+            page,
+            placeholder,
+            value,
+            line_map=LINE_EXTRA_BY_PLACEHOLDER,
+            line_width=LINE_STROKE_WIDTH,
+        )
+    pdf_bytes = doc.tobytes()
+    doc.close()
+    return PdfReader(BytesIO(pdf_bytes)).pages[0]
 
 
 def generate_passports_pdf(session, rows: Iterable[dict], owner=None):

@@ -416,7 +416,12 @@ class OwnerHistoryDetailWindow(QMainWindow):
         for row in self.rows:
             sheep = row["sheep"]
             created_at = getattr(sheep, "date_filling", None)
-            if since is not None and created_at and created_at < since:
+            latest_application = row.get("latest_application")
+            latest_app_date = getattr(latest_application, "date", None) if latest_application is not None else None
+            activity_date = created_at
+            if latest_app_date and (activity_date is None or latest_app_date > activity_date):
+                activity_date = latest_app_date
+            if since is not None and activity_date and activity_date < since:
                 continue
             if paid_filter == "paid" and row.get("is_unpaid"):
                 continue
