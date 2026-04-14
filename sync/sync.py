@@ -628,11 +628,17 @@ def sync_from_server(session: Session, progress_cb=None, should_stop=None):
                 clean_item = _normalize_item(session, model, item)
 
                 local = session.query(model).filter_by(remote_id=remote_id).first()
+                if local is None and model is User:
+                    username = clean_item.get("username")
+                    if username:
+                        local = session.query(User).filter_by(username=username).first()
                 if local:
                     for k, v in clean_item.items():
                         if k == "id":
                             continue
                         setattr(local, k, v)
+                    if model is User and not getattr(local, "remote_id", None):
+                        local.remote_id = remote_id
                 else:
                     try:
                         clean_item.pop("id", None)
