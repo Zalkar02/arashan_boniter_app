@@ -34,7 +34,7 @@ class SheepPickerDialog(QDialog):
         self.ed_search.setPlaceholderText("Поиск по id_n или кличке…")
         self._search_timer = QTimer(self)
         self._search_timer.setSingleShot(True)
-        self._search_timer.setInterval(4000)
+        self._search_timer.setInterval(1000)
         layout.addWidget(self.ed_search)
 
         self.list = QListWidget(self)

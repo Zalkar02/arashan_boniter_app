@@ -1,7 +1,7 @@
 # settings.py — настройки и смена пользователя
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QMessageBox, QProgressDialog, QComboBox
+    QMessageBox, QProgressDialog, QComboBox, QApplication
 )
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QPalette, QColor, QKeySequence
@@ -263,6 +263,9 @@ class SettingsWindow(QMainWindow):
                 "Обновление",
                 "Обновление загружено из main.\nПерезапустите приложение, чтобы применить изменения.",
             )
+            app = QApplication.instance()
+            if app is not None:
+                app.quit()
         else:
             branch = result.get("branch", "—")
             behind = result.get("behind", 0)

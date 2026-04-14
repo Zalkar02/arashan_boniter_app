@@ -234,10 +234,7 @@ class SheepCreateWindow(QMainWindow):
                     self.cb_color.addItem(color.name, color.id)
             except Exception:
                 pass
-        for i in range(self.cb_color.count()):
-            if (self.cb_color.itemText(i) or "").strip().casefold() == "красный":
-                self.cb_color.setCurrentIndex(i)
-                break
+        self._set_default_color()
         form.addRow(self._lab("Окрас*"), self.cb_color)
         return group
 
@@ -456,6 +453,13 @@ class SheepCreateWindow(QMainWindow):
     def _lab(self, text):
         l = QLabel(text); l.setObjectName("formlabel"); l.setProperty("class", "formlabel"); return l
 
+    def _set_default_color(self):
+        for i in range(self.cb_color.count()):
+            if (self.cb_color.itemText(i) or "").strip().casefold() == "красный":
+                self.cb_color.setCurrentIndex(i)
+                return
+        self.cb_color.setCurrentIndex(0)
+
     def _lab_range(self, text, sp, suffix):
         def _fmt(v):
             return str(int(v)) if abs(v - int(v)) < 1e-9 else str(v)
@@ -482,6 +486,10 @@ class SheepCreateWindow(QMainWindow):
             gb.setVisible(True)
             lamb_gb.setVisible(False)
             lamb_gb.setMaximumHeight(0)
+            if self._editing_application_id is None:
+                self.cb_kurdyk.setCurrentIndex(2)
+                self.cb_size.setCurrentIndex(1)
+                self.cb_fur.setCurrentIndex(1)
         else:
             lamb_gb.setVisible(True)
             lamb_gb.setMaximumHeight(lamb_gb.sizeHint().height())
@@ -964,7 +972,7 @@ class SheepCreateWindow(QMainWindow):
         self.dt_dob.setDate(QDate.currentDate())
         self.ed_age.clear()
         self.cb_gender.setCurrentIndex(0)
-        self.cb_color.setCurrentIndex(0)
+        self._set_default_color()
         self.ed_father.clear()
         self.ed_mother.clear()
         self.txt_comment.clear()

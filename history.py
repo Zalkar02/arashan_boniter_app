@@ -66,7 +66,7 @@ class HistoryWindow(QMainWindow):
         self.ed_search.setPlaceholderText("Поиск по хозяйству, телефону или населённому пункту…")
         self._search_timer = QTimer(self)
         self._search_timer.setSingleShot(True)
-        self._search_timer.setInterval(4000)
+        self._search_timer.setInterval(1000)
         self.btn_refresh = QPushButton("Обновить")
         search_row.addWidget(self.ed_search, 1)
         search_row.addWidget(self.btn_refresh)

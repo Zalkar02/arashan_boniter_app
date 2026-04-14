@@ -83,7 +83,7 @@ class OwnerSelect(QMainWindow):
         # Живой поиск с задержкой
         self._search_timer = QTimer(self)
         self._search_timer.setSingleShot(True)
-        self._search_timer.setInterval(4000)
+        self._search_timer.setInterval(1000)
         self.input_search.textChanged.connect(lambda: self._search_timer.start())
         # Enter = найти
         self.input_search.returnPressed.connect(self.search_owners)

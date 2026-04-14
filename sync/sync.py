@@ -630,9 +630,12 @@ def sync_from_server(session: Session, progress_cb=None, should_stop=None):
                 local = session.query(model).filter_by(remote_id=remote_id).first()
                 if local:
                     for k, v in clean_item.items():
+                        if k == "id":
+                            continue
                         setattr(local, k, v)
                 else:
                     try:
+                        clean_item.pop("id", None)
                         new = model(**clean_item)
                         session.add(new)
                     except Exception as e:

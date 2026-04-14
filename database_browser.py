@@ -123,7 +123,7 @@ class DatabaseBrowserWindow(QMainWindow):
         self.ed_owner_search.setPlaceholderText("Поиск по ФИО, логину, телефону, адресу")
         self._owner_search_timer = QTimer(self)
         self._owner_search_timer.setSingleShot(True)
-        self._owner_search_timer.setInterval(4000)
+        self._owner_search_timer.setInterval(1000)
         self.ed_owner_search.textChanged.connect(lambda: self._owner_search_timer.start())
         self.cmb_owner_region = QComboBox()
         self.cmb_owner_region.currentIndexChanged.connect(lambda: self.reload_owners(reset_page=True))
@@ -185,7 +185,7 @@ class DatabaseBrowserWindow(QMainWindow):
         self.ed_sheep_search.setPlaceholderText("Поиск по ID, кличке, владельцу, окрасу")
         self._sheep_search_timer = QTimer(self)
         self._sheep_search_timer.setSingleShot(True)
-        self._sheep_search_timer.setInterval(4000)
+        self._sheep_search_timer.setInterval(1000)
         self.ed_sheep_search.textChanged.connect(lambda: self._sheep_search_timer.start())
 
         self.cmb_gender = QComboBox()
