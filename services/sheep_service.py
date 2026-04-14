@@ -14,6 +14,7 @@ def save_sheep_bundle(session, payload: dict):
     sheep = None
     if existing_sheep_id is not None:
         sheep = session.query(Sheep).filter_by(id=existing_sheep_id).first()
+    previous_owner_id = getattr(sheep, "owner_id", None) if sheep is not None else None
 
     sheep_fields = {
         "created_by_user_id": payload.get("created_by_user_id"),
@@ -54,6 +55,27 @@ def save_sheep_bundle(session, payload: dict):
             date2=date_filling,
         )
         session.add(owner_link)
+    elif previous_owner_id != owner_id:
+        change_date = date_filling or datetime.date.today()
+        active_links = (
+            session.query(Owner)
+            .filter_by(sheep_id=sheep.id, owner_bool=True)
+            .all()
+        )
+        for link in active_links:
+            link.owner_bool = False
+            link.date2 = change_date
+            link.updated_at = datetime.datetime.utcnow()
+            link.synced = False
+        new_link = Owner(
+            sheep_id=sheep.id,
+            owner_id=owner_id,
+            owner_bool=True,
+            date1=change_date,
+            date2=change_date,
+        )
+        new_link.synced = False
+        session.add(new_link)
 
     for relative_idn in payload.get("parent_idns", ()):
         if not relative_idn or relative_idn == idn:

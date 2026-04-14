@@ -218,6 +218,12 @@ class SettingsWindow(QMainWindow):
         if self.sync_dialog is not None:
             self.sync_dialog.close()
             self.sync_dialog = None
+        prev = getattr(self, "prev", None)
+        if prev is not None:
+            if hasattr(prev, "reload"):
+                prev.reload()
+            elif hasattr(prev, "load_data"):
+                prev.load_data()
         self.statusBar().showMessage("Синхронизация завершена.", 5000)
         QMessageBox.information(self, "Синхронизация", "Синхронизация завершена.")
         self.sync_worker = None

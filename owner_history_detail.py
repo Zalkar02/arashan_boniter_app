@@ -418,9 +418,9 @@ class OwnerHistoryDetailWindow(QMainWindow):
             created_at = getattr(sheep, "date_filling", None)
             if since is not None and created_at and created_at < since:
                 continue
-            if paid_filter == "paid" and not bool(getattr(sheep, "is_paid", False)):
+            if paid_filter == "paid" and row.get("is_unpaid"):
                 continue
-            if paid_filter == "unpaid" and bool(getattr(sheep, "is_paid", False)):
+            if paid_filter == "unpaid" and not row.get("is_unpaid"):
                 continue
             if sync_filter == "synced" and not bool(getattr(sheep, "synced", False)):
                 continue
@@ -491,7 +491,7 @@ class OwnerHistoryDetailWindow(QMainWindow):
         self._set_checked_rows(lambda _: True)
 
     def select_unpaid_rows(self):
-        self._set_checked_rows(lambda row: row["payment_status"] == "Не оплачено")
+        self._set_checked_rows(lambda row: row.get("is_unpaid"))
 
     def clear_checked_rows(self):
         self._set_checked_rows(lambda _: False)

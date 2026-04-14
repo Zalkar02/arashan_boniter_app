@@ -209,6 +209,9 @@ def get_owner_detail_rows(session, user_model, sheep_model, application_model, o
         latest_application = _get_latest_application(owner_apps)
         sheep_synced = bool(getattr(sheep, "synced", False))
         sheep_paid = bool(getattr(sheep, "is_paid", False))
+        latest_paid = bool(getattr(latest_application, "is_paid", False)) if latest_application else False
+        fully_paid = sheep_paid and (latest_application is None or latest_paid)
+        has_unpaid_application = latest_application is not None and not latest_paid
         record_type = _get_record_type(sheep, latest_application)
 
         rows.append(
@@ -219,10 +222,11 @@ def get_owner_detail_rows(session, user_model, sheep_model, application_model, o
                 "has_applications": has_applications,
                 "record_type": record_type,
                 "sync_status": "Синхронизировано" if sheep_synced else "Не синхронизировано",
-                "payment_status": _get_payment_status(sheep_paid),
-                "passport_status": "Доступен" if sheep_paid else "Недоступен",
-                "can_pay": sheep_synced and not sheep_paid,
-                "can_print": sheep_paid,
+                "payment_status": _get_payment_status(sheep_paid, has_unpaid_application),
+                "passport_status": "Доступен" if fully_paid else "Недоступен",
+                "can_pay": sheep_synced and (not sheep_paid or has_unpaid_application),
+                "can_print": fully_paid,
+                "is_unpaid": not fully_paid,
             }
         )
 
@@ -277,7 +281,9 @@ def _get_record_type(sheep, latest_application):
     return "Овца"
 
 
-def _get_payment_status(sheep_paid: bool):
-    if sheep_paid:
+def _get_payment_status(sheep_paid: bool, has_unpaid_application: bool):
+    if sheep_paid and not has_unpaid_application:
         return "Оплачено"
+    if sheep_paid and has_unpaid_application:
+        return "Не оплачено (повторка)"
     return "Не оплачено"

@@ -433,6 +433,14 @@ def sync_to_server(session: Session, progress_cb=None, should_stop=None):
             unsynced = [obj for obj in unsynced if not getattr(obj, "created_by_guest", False)]
         unsynced = [obj for obj in unsynced if _is_object_ready_for_sync(session, model, obj)]
         if not unsynced:
+            _emit_progress(
+                progress_cb,
+                "upload",
+                model_name,
+                0,
+                0,
+                f"{MODEL_LABELS.get(model_name, model_name)}: 0 / 0",
+            )
             continue
 
         url = f"{BASE_URL}/{MODEL_NAMES[model]}/post/"
@@ -519,6 +527,14 @@ def sync_owner_to_server(session: Session, owner_id: int, progress_cb=None, shou
             unsynced = [obj for obj in unsynced if not getattr(obj, "created_by_guest", False)]
         unsynced = [obj for obj in unsynced if _is_object_ready_for_sync(session, model, obj)]
         if not unsynced:
+            _emit_progress(
+                progress_cb,
+                "upload",
+                model_name,
+                0,
+                0,
+                f"{MODEL_LABELS.get(model_name, model_name)}: 0 / 0",
+            )
             continue
 
         url = f"{BASE_URL}/{MODEL_NAMES[model]}/post/"

@@ -56,9 +56,9 @@ def create_payment(session, selected_rows):
     for row in selected_rows:
         sheep = row["sheep"]
         latest_application = row.get("latest_application")
-        record_type = row.get("record_type")
         remote_id = getattr(sheep, "remote_id", None)
-        if remote_id and record_type != "Бонитр.":
+        include_sheep = not bool(getattr(sheep, "is_paid", False))
+        if remote_id and include_sheep:
             sheep_ids.append(remote_id)
             local_sheep.append(sheep)
         target_applications = row["applications"]
@@ -66,7 +66,7 @@ def create_payment(session, selected_rows):
             target_applications = [latest_application]
         for application in target_applications:
             app_remote_id = getattr(application, "remote_id", None)
-            if app_remote_id:
+            if app_remote_id and not bool(getattr(application, "is_paid", False)):
                 application_ids.append(app_remote_id)
                 local_applications.append(application)
 
