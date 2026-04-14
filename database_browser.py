@@ -1,4 +1,4 @@
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QColor, QKeySequence, QPalette
 from PyQt5.QtWidgets import (
     QComboBox,
@@ -63,6 +63,12 @@ class DatabaseBrowserWindow(QMainWindow):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._suppress_restore = False
+        self._owners_page = 1
+        self._owners_page_size = 50
+        self._owners_total = 0
+        self._sheep_page = 1
+        self._sheep_page_size = 50
+        self._sheep_total = 0
         self.setWindowTitle("База данных")
         self.resize(1400, 860)
         self.setMinimumSize(1100, 700)
@@ -115,9 +121,12 @@ class DatabaseBrowserWindow(QMainWindow):
         filters = QHBoxLayout()
         self.ed_owner_search = QLineEdit()
         self.ed_owner_search.setPlaceholderText("Поиск по ФИО, логину, телефону, адресу")
-        self.ed_owner_search.textChanged.connect(self.reload_owners)
+        self._owner_search_timer = QTimer(self)
+        self._owner_search_timer.setSingleShot(True)
+        self._owner_search_timer.setInterval(4000)
+        self.ed_owner_search.textChanged.connect(lambda: self._owner_search_timer.start())
         self.cmb_owner_region = QComboBox()
-        self.cmb_owner_region.currentIndexChanged.connect(self.reload_owners)
+        self.cmb_owner_region.currentIndexChanged.connect(lambda: self.reload_owners(reset_page=True))
         self.btn_owner_edit = QPushButton("Редактировать владельца")
         self.btn_owner_edit.clicked.connect(self.edit_selected_owner)
         self.btn_owner_refresh = QPushButton("Обновить")
@@ -129,6 +138,19 @@ class DatabaseBrowserWindow(QMainWindow):
         filters.addWidget(self.btn_owner_edit)
         filters.addWidget(self.btn_owner_refresh)
         layout.addLayout(filters)
+
+        pager = QHBoxLayout()
+        self.btn_owner_prev = QPushButton("← Назад")
+        self.btn_owner_next = QPushButton("Вперёд →")
+        self.lbl_owner_page = QLabel("Страница 1")
+        pager.addWidget(self.btn_owner_prev)
+        pager.addWidget(self.btn_owner_next)
+        pager.addStretch(1)
+        pager.addWidget(self.lbl_owner_page)
+        layout.addLayout(pager)
+        self.btn_owner_prev.clicked.connect(lambda: self._change_owner_page(-1))
+        self.btn_owner_next.clicked.connect(lambda: self._change_owner_page(1))
+        self._owner_search_timer.timeout.connect(lambda: self.reload_owners(reset_page=True))
 
         self.tbl_owners = QTableWidget(0, 8, self)
         self.tbl_owners.setHorizontalHeaderLabels(
@@ -161,25 +183,28 @@ class DatabaseBrowserWindow(QMainWindow):
         filters = QHBoxLayout()
         self.ed_sheep_search = QLineEdit()
         self.ed_sheep_search.setPlaceholderText("Поиск по ID, кличке, владельцу, окрасу")
-        self.ed_sheep_search.textChanged.connect(self.reload_sheep)
+        self._sheep_search_timer = QTimer(self)
+        self._sheep_search_timer.setSingleShot(True)
+        self._sheep_search_timer.setInterval(4000)
+        self.ed_sheep_search.textChanged.connect(lambda: self._sheep_search_timer.start())
 
         self.cmb_gender = QComboBox()
         self.cmb_gender.addItem("Все", "")
         self.cmb_gender.addItem("Бараны", "B")
         self.cmb_gender.addItem("Матки", "O")
-        self.cmb_gender.currentIndexChanged.connect(self.reload_sheep)
+        self.cmb_gender.currentIndexChanged.connect(lambda: self.reload_sheep(reset_page=True))
 
         self.cmb_paid = QComboBox()
         self.cmb_paid.addItem("Любая оплата", "")
         self.cmb_paid.addItem("Оплаченные", "paid")
         self.cmb_paid.addItem("Не оплаченные", "unpaid")
-        self.cmb_paid.currentIndexChanged.connect(self.reload_sheep)
+        self.cmb_paid.currentIndexChanged.connect(lambda: self.reload_sheep(reset_page=True))
 
         self.cmb_synced = QComboBox()
         self.cmb_synced.addItem("Любая синхронизация", "")
         self.cmb_synced.addItem("Синхронизированные", "synced")
         self.cmb_synced.addItem("Не синхронизированные", "unsynced")
-        self.cmb_synced.currentIndexChanged.connect(self.reload_sheep)
+        self.cmb_synced.currentIndexChanged.connect(lambda: self.reload_sheep(reset_page=True))
 
         self.btn_sheep_edit = QPushButton("Редактировать овцу")
         self.btn_sheep_edit.clicked.connect(self.edit_selected_sheep)
@@ -197,6 +222,19 @@ class DatabaseBrowserWindow(QMainWindow):
         filters.addWidget(self.btn_sheep_edit)
         filters.addWidget(self.btn_sheep_refresh)
         layout.addLayout(filters)
+
+        pager = QHBoxLayout()
+        self.btn_sheep_prev = QPushButton("← Назад")
+        self.btn_sheep_next = QPushButton("Вперёд →")
+        self.lbl_sheep_page = QLabel("Страница 1")
+        pager.addWidget(self.btn_sheep_prev)
+        pager.addWidget(self.btn_sheep_next)
+        pager.addStretch(1)
+        pager.addWidget(self.lbl_sheep_page)
+        layout.addLayout(pager)
+        self.btn_sheep_prev.clicked.connect(lambda: self._change_sheep_page(-1))
+        self.btn_sheep_next.clicked.connect(lambda: self._change_sheep_page(1))
+        self._sheep_search_timer.timeout.connect(lambda: self.reload_sheep(reset_page=True))
 
         self.tbl_sheep = QTableWidget(0, 9, self)
         self.tbl_sheep.setHorizontalHeaderLabels(
@@ -222,9 +260,11 @@ class DatabaseBrowserWindow(QMainWindow):
 
         self.tabs.addTab(tab, "Овцы и бараны")
 
-    def reload_owners(self):
+    def reload_owners(self, reset_page: bool = False):
         if db is None:
             return
+        if reset_page:
+            self._owners_page = 1
 
         regions = get_owner_regions(db, User)
         current_region = self.cmb_owner_region.currentData() if self.cmb_owner_region.count() else ""
@@ -237,14 +277,18 @@ class DatabaseBrowserWindow(QMainWindow):
         self.cmb_owner_region.setCurrentIndex(index if index >= 0 else 0)
         self.cmb_owner_region.blockSignals(False)
 
-        rows = get_owner_rows(
+        rows, total = get_owner_rows(
             db,
             User,
             Sheep,
             Owner,
             self.ed_owner_search.text(),
             self.cmb_owner_region.currentData() or "",
+            (self._owners_page - 1) * self._owners_page_size,
+            self._owners_page_size,
         )
+        self._owners_total = total
+        self._update_owner_pager()
         self.tbl_owners.setSortingEnabled(False)
         self.tbl_owners.setRowCount(len(rows))
         for row_index, row in enumerate(rows):
@@ -265,13 +309,15 @@ class DatabaseBrowserWindow(QMainWindow):
                     item.setData(Qt.UserRole, user.id)
                 self.tbl_owners.setItem(row_index, col, item)
         self.tbl_owners.setSortingEnabled(True)
-        self.statusBar().showMessage(f"Владельцев: {len(rows)}")
+        self.statusBar().showMessage(f"Владельцев: {self._owners_total}")
 
-    def reload_sheep(self):
+    def reload_sheep(self, reset_page: bool = False):
         if db is None:
             return
+        if reset_page:
+            self._sheep_page = 1
 
-        rows = get_sheep_rows(
+        rows, total = get_sheep_rows(
             db,
             Sheep,
             User,
@@ -280,7 +326,11 @@ class DatabaseBrowserWindow(QMainWindow):
             self.cmb_gender.currentData() or "",
             self.cmb_paid.currentData() or "",
             self.cmb_synced.currentData() or "",
+            (self._sheep_page - 1) * self._sheep_page_size,
+            self._sheep_page_size,
         )
+        self._sheep_total = total
+        self._update_sheep_pager()
         self.tbl_sheep.setSortingEnabled(False)
         self.tbl_sheep.setRowCount(len(rows))
         for row_index, row in enumerate(rows):
@@ -303,7 +353,31 @@ class DatabaseBrowserWindow(QMainWindow):
                     item.setData(Qt.UserRole, sheep.id)
                 self.tbl_sheep.setItem(row_index, col, item)
         self.tbl_sheep.setSortingEnabled(True)
-        self.statusBar().showMessage(f"Овец: {len(rows)}")
+        self.statusBar().showMessage(f"Овец: {self._sheep_total}")
+
+    def _update_owner_pager(self):
+        total_pages = max(1, (self._owners_total + self._owners_page_size - 1) // self._owners_page_size)
+        if self._owners_page > total_pages:
+            self._owners_page = total_pages
+        self.btn_owner_prev.setEnabled(self._owners_page > 1)
+        self.btn_owner_next.setEnabled(self._owners_page < total_pages)
+        self.lbl_owner_page.setText(f"Страница {self._owners_page} из {total_pages}")
+
+    def _update_sheep_pager(self):
+        total_pages = max(1, (self._sheep_total + self._sheep_page_size - 1) // self._sheep_page_size)
+        if self._sheep_page > total_pages:
+            self._sheep_page = total_pages
+        self.btn_sheep_prev.setEnabled(self._sheep_page > 1)
+        self.btn_sheep_next.setEnabled(self._sheep_page < total_pages)
+        self.lbl_sheep_page.setText(f"Страница {self._sheep_page} из {total_pages}")
+
+    def _change_owner_page(self, step: int):
+        self._owners_page = max(1, self._owners_page + step)
+        self.reload_owners()
+
+    def _change_sheep_page(self, step: int):
+        self._sheep_page = max(1, self._sheep_page + step)
+        self.reload_sheep()
 
     def edit_selected_sheep(self):
         current_row = self.tbl_sheep.currentRow()

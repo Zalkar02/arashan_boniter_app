@@ -204,10 +204,12 @@ def _prepare_outgoing_payload(session: Session, model, data: dict):
         password = outgoing.get("password")
         if not password:
             outgoing.pop("password", None)
+        outgoing.pop("name_norm", None)
     elif model in (Sheep, Application):
         outgoing.pop("payment_reference", None)
         outgoing.pop("payment_token", None)
         outgoing.pop("is_printed", None)
+        outgoing.pop("nick_norm", None)
 
     fk_map = FK_FIELD_MAP.get(model, {})
     for local_key, (remote_key, related_model) in fk_map.items():
@@ -293,6 +295,9 @@ def _normalize_item(session: Session, model, item: dict):
                 clean_item[column.name] = datetime.date.fromisoformat(clean_item[column.name])
             elif isinstance(column.type, DateTime):
                 clean_item[column.name] = datetime.datetime.fromisoformat(clean_item[column.name])
+
+    # never override local primary key from server id
+    clean_item.pop("id", None)
 
     # remote_id берем из id сервера
     if "remote_id" in valid_keys and "id" in item:

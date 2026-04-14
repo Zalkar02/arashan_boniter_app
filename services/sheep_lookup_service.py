@@ -1,4 +1,5 @@
 from sqlalchemy import func
+from services.owner_search_service import _norm
 
 
 def get_owner_by_id(session, user_model, owner_id: int):
@@ -26,11 +27,19 @@ def search_sheep_for_picker(session, sheep_model, raw_query: str = "", gender_fi
 
     text = (raw_query or "").strip()
     if text:
-        lowered = text.casefold()
-        query = query.filter(
-            func.lower(func.coalesce(sheep_model.id_n, "")).contains(lowered)
-            | func.lower(func.coalesce(sheep_model.nick, "")).contains(lowered)
-        )
+        has_non_ascii = any(ord(ch) > 127 for ch in text)
+        if has_non_ascii:
+            norm = _norm(text)
+            query = query.filter(
+                func.coalesce(sheep_model.nick_norm, "").contains(norm)
+                | func.coalesce(sheep_model.id_n, "").contains(text)
+            )
+        else:
+            lowered = text.casefold()
+            query = query.filter(
+                func.lower(func.coalesce(sheep_model.id_n, "")).contains(lowered)
+                | func.lower(func.coalesce(sheep_model.nick, "")).contains(lowered)
+            )
 
     return query.order_by(sheep_model.id.desc()).limit(max(1, min(limit, 200))).all()
 

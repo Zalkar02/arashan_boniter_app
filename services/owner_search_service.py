@@ -1,5 +1,6 @@
 import re
 from unicodedata import normalize
+from sqlalchemy import or_
 
 
 REGION_LABELS = {
@@ -100,6 +101,70 @@ def find_owners(session, user_model, raw_query: str):
         if name_ok or phone_ok:
             owners.append(owner)
     return owners
+
+
+def find_owners_page(session, user_model, raw_query: str, offset: int, limit: int):
+    query_text = (raw_query or "").strip()
+    query = session.query(user_model).filter_by(is_deleted=False)
+
+    has_non_ascii = any(ord(ch) > 127 for ch in query_text)
+    if query_text and not has_non_ascii:
+        like = f"%{query_text}%"
+        query = query.filter(
+            or_(
+                user_model.name.ilike(like),
+                user_model.name_norm.ilike(like),
+                user_model.username.ilike(like),
+                user_model.phone.ilike(like),
+                user_model.region.ilike(like),
+                user_model.area.ilike(like),
+                user_model.city.ilike(like),
+                user_model.home.ilike(like),
+            )
+        )
+        total = query.count()
+        rows = (
+            query.order_by(user_model.name.asc(), user_model.id.desc())
+            .offset(max(0, int(offset)))
+            .limit(max(1, int(limit)))
+            .all()
+        )
+        return rows, total
+
+    # Cyrillic-safe fallback: filter in Python using casefolded strings
+    if query_text and has_non_ascii:
+        norm = _norm(query_text)
+        query = query.filter(user_model.name_norm.like(f"%{norm}%"))
+    rows = query.order_by(user_model.name.asc(), user_model.id.desc()).all()
+    if not query_text:
+        total = len(rows)
+        return rows[max(0, int(offset)): max(0, int(offset)) + max(1, int(limit))], total
+
+    query_norm = _norm(query_text)
+    query_digits = _digits(query_text)
+    filtered = []
+    for owner in rows:
+        haystack = " ".join(
+            [
+                str(owner.name or ""),
+                str(owner.username or ""),
+                str(owner.phone or ""),
+                str(owner.region or ""),
+                str(owner.area or ""),
+                str(owner.city or ""),
+                str(owner.home or ""),
+            ]
+        )
+        haystack_norm = _norm(haystack)
+        name_ok = query_norm in haystack_norm
+        phone_ok = bool(query_digits and query_digits in _digits(owner.phone))
+        if name_ok or phone_ok:
+            filtered.append(owner)
+
+    total = len(filtered)
+    start = max(0, int(offset))
+    end = start + max(1, int(limit))
+    return filtered[start:end], total
 
 
 def format_owner_display(owner) -> str:

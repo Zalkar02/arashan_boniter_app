@@ -119,6 +119,17 @@ def calc_age(dob: str | None, on_date: str | None) -> str:
     return f"{max(0, years)}.{max(0, months)}"
 
 
+def calc_age_years(dob: str | None, on_date: str | None) -> str:
+    if not dob or not on_date:
+        return ""
+    dob_y, dob_m, dob_d = [int(part) for part in str(dob).split("-")]
+    dt_y, dt_m, dt_d = [int(part) for part in str(on_date).split("-")]
+    years = dt_y - dob_y
+    if (dt_m, dt_d) < (dob_m, dob_d):
+        years -= 1
+    return str(max(0, years))
+
+
 def map_kurdyk(value):
     return {
         "raised": "Припод.",
@@ -162,7 +173,7 @@ def draw_row_values(pdf: canvas.Canvas, x_lines, top_y, bottom_y, values, font_s
 def build_main_row_values(app, sheep_dob: str):
     return [
         app["date"] or "",
-        calc_age(sheep_dob, app["date"]),
+        calc_age_years(sheep_dob, app["date"]),
         fmt_number(app["weight"]),
         fmt_number(app["crest_height"]),
         fmt_number(app["sacrum_height"]),

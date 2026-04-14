@@ -7,11 +7,11 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QPalette, QColor, QKeySequence
-from PyQt5.QtCore import QSize
+from PyQt5.QtCore import QSize, QTimer
 from owner_create import OwnerCreateDialog
 from resource_paths import resource_path
 from services.db_service import get_db
-from services.owner_search_service import find_owners, format_owner_display
+from services.owner_search_service import find_owners_page, format_owner_display
 from services.owner_service import soft_delete_owner
 
 SheepCreateWindowClass = None
@@ -45,6 +45,9 @@ class OwnerSelect(QMainWindow):
     def __init__(self):
         super().__init__()
         self._suppress_restore = False
+        self._page = 1
+        self._page_size = 50
+        self._total = 0
         self.setWindowTitle("Выбор владельца")
         self.resize(1200, 800)
         self.setMinimumSize(900, 600)
@@ -77,8 +80,11 @@ class OwnerSelect(QMainWindow):
 
         self.input_search = QLineEdit()
         self.input_search.setPlaceholderText("ФИО или телефон ")
-        # Живой поиск
-        self.input_search.textChanged.connect(self.search_owners)
+        # Живой поиск с задержкой
+        self._search_timer = QTimer(self)
+        self._search_timer.setSingleShot(True)
+        self._search_timer.setInterval(4000)
+        self.input_search.textChanged.connect(lambda: self._search_timer.start())
         # Enter = найти
         self.input_search.returnPressed.connect(self.search_owners)
 
@@ -104,6 +110,16 @@ class OwnerSelect(QMainWindow):
         top.addWidget(self.btn_edit_owner, 1)
         top.addWidget(self.btn_delete_owner, 1)
 
+        pager = QHBoxLayout()
+        self.btn_prev = QPushButton("← Назад")
+        self.btn_next = QPushButton("Вперёд →")
+        self.lbl_page = QLabel("Страница 1")
+        pager.addWidget(self.btn_prev)
+        pager.addWidget(self.btn_next)
+        pager.addStretch(1)
+        pager.addWidget(self.lbl_page)
+        v.addLayout(pager)
+
         self.list_owners = QListWidget()
         # шрифт списка покрупнее
         self.list_owners.setObjectName("ownersList")              # задаём id
@@ -126,6 +142,7 @@ class OwnerSelect(QMainWindow):
         self.list_owners.setSpacing(0)
         self.list_owners.setUniformItemSizes(False)
         self.list_owners.itemDoubleClicked.connect(lambda _: self.continue_with_owner())
+        self.list_owners.currentRowChanged.connect(self._apply_selection_styles)
         v.addWidget(self.list_owners, 1)
 
         bottom = QHBoxLayout()
@@ -142,6 +159,9 @@ class OwnerSelect(QMainWindow):
         self.btn_continue = QPushButton("Продолжить")
         self.btn_continue.setShortcut(QKeySequence("Ctrl+Enter"))
         self.btn_continue.clicked.connect(self.continue_with_owner)
+        self.btn_prev.clicked.connect(lambda: self._change_page(-1))
+        self.btn_next.clicked.connect(lambda: self._change_page(1))
+        self._search_timer.timeout.connect(lambda: self.search_owners(reset_page=True))
 
         bottom.addWidget(self.btn_back)
         bottom.addWidget(self.btn_focus)
@@ -169,22 +189,32 @@ class OwnerSelect(QMainWindow):
 
     # ── Логика ──────────────────────────────────────────────
 
-    def search_owners(self):
+    def search_owners(self, reset_page: bool = True):
         raw = (self.input_search.text() or "").strip()
         self.list_owners.clear()
+        if reset_page:
+            self._page = 1
 
         if db is None or User is None:
             QMessageBox.critical(self, "База данных", _db_error or "Недоступна")
             return
 
         try:
-            owners = find_owners(db, User, raw)
+            owners, total = find_owners_page(
+                db,
+                User,
+                raw,
+                (self._page - 1) * self._page_size,
+                self._page_size,
+            )
+            self._total = total
         except Exception as e:
             QMessageBox.critical(self, "Ошибка БД", str(e))
             return
 
         if not owners:
             self.statusBar().showMessage("Совпадений не найдено")
+            self._update_pager()
             return
 
         for o in owners:
@@ -194,7 +224,8 @@ class OwnerSelect(QMainWindow):
             self.list_owners.addItem(item)
             self.list_owners.setItemWidget(item, self._build_owner_item_widget(o))
 
-        self.statusBar().showMessage(f"Найдено: {len(owners)}")
+        self.statusBar().showMessage(f"Найдено: {self._total}")
+        self._update_pager()
 
         # Выделим первую строку для удобства
         if self.list_owners.count() > 0:
@@ -203,6 +234,31 @@ class OwnerSelect(QMainWindow):
     def clear_search(self):
         self.input_search.clear()
         self.input_search.setFocus()
+
+    def _update_pager(self):
+        total_pages = max(1, (self._total + self._page_size - 1) // self._page_size)
+        if self._page > total_pages:
+            self._page = total_pages
+        self.btn_prev.setEnabled(self._page > 1)
+        self.btn_next.setEnabled(self._page < total_pages)
+        self.lbl_page.setText(f"Страница {self._page} из {total_pages}")
+
+    def _change_page(self, step: int):
+        self._page += step
+        if self._page < 1:
+            self._page = 1
+        self.search_owners(reset_page=False)
+
+    def _apply_selection_styles(self, _row: int):
+        for i in range(self.list_owners.count()):
+            item = self.list_owners.item(i)
+            widget = self.list_owners.itemWidget(item)
+            if widget is None:
+                continue
+            if i == self.list_owners.currentRow():
+                widget.setStyleSheet("background: #dbeafe; border-radius: 8px;")
+            else:
+                widget.setStyleSheet("background: transparent;")
 
     def _build_owner_item_widget(self, owner):
         card = QWidget()
@@ -244,6 +300,9 @@ class OwnerSelect(QMainWindow):
         dlg = OwnerCreateDialog(self)
         if dlg.exec_() == dlg.Accepted and dlg.created_id:
             # После создания — перезагрузим список и выделим созданного
+            owner = db.query(User).filter_by(id=dlg.created_id, is_deleted=False).first() if db and User else None
+            if owner:
+                self.input_search.setText(owner.name or owner.username or "")
             self.search_owners()
             for i in range(self.list_owners.count()):
                 it = self.list_owners.item(i)

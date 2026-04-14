@@ -26,6 +26,7 @@ class User(Base):
     username = Column(String, unique=True)
     password = Column(String)                # пароль
     name = Column(String)
+    name_norm = Column(String)
     phone = Column(String)
     region = Column(String)
     area = Column(String)
@@ -59,6 +60,7 @@ class Sheep(Base):
     created_by_user_id = Column(Integer, nullable=True)
     id_n = Column(String, unique=True)
     nick = Column(String)
+    nick_norm = Column(String)
     dob = Column(Date)
     gender = Column(String)
     comment = Column(String)
@@ -205,6 +207,7 @@ def _ensure_local_columns(engine):
             "city": "VARCHAR",
             "home": "VARCHAR",
             "username": "VARCHAR",
+            "name_norm": "VARCHAR",
             "created_by_user_id": "INTEGER",
             "is_deleted": "BOOLEAN DEFAULT 0",
         },
@@ -226,6 +229,7 @@ def _ensure_local_columns(engine):
             "is_paid": "BOOLEAN DEFAULT 0",
             "is_printed": "BOOLEAN DEFAULT 0",
             "is_deleted": "BOOLEAN DEFAULT 0",
+            "nick_norm": "VARCHAR",
         },
         "applications": {
             "size": "VARCHAR",

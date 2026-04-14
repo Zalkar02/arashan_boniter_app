@@ -148,6 +148,15 @@ def _calc_age(dob, on_date):
     return f"{max(0, years)}.{max(0, months)}"
 
 
+def _calc_age_years(dob, on_date):
+    if not dob or not on_date:
+        return ""
+    years = on_date.year - dob.year
+    if (on_date.month, on_date.day) < (dob.month, dob.day):
+        years -= 1
+    return str(max(0, years))
+
+
 def _get_parent(sheep, gender):
     return next((parent for parent in getattr(sheep, "parents", []) if getattr(parent, "gender", None) == gender), None)
 
@@ -336,7 +345,7 @@ def _draw_wrapped_text(pdf: canvas.Canvas, x_mm: float, y_mm: float, value, widt
 def _build_main_row_values(application, sheep_dob):
     return [
         _fmt_date(getattr(application, "date", None)),
-        _calc_age(sheep_dob, getattr(application, "date", None)),
+        _calc_age_years(sheep_dob, getattr(application, "date", None)),
         _fmt_number(getattr(application, "weight", None)),
         _fmt_number(getattr(application, "crest_height", None)),
         _fmt_number(getattr(application, "sacrum_height", None)),

@@ -1,4 +1,4 @@
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtWidgets import (
     QDialog,
     QHBoxLayout,
@@ -32,6 +32,9 @@ class SheepPickerDialog(QDialog):
         layout = QVBoxLayout(self)
         self.ed_search = QLineEdit(self)
         self.ed_search.setPlaceholderText("Поиск по id_n или кличке…")
+        self._search_timer = QTimer(self)
+        self._search_timer.setSingleShot(True)
+        self._search_timer.setInterval(4000)
         layout.addWidget(self.ed_search)
 
         self.list = QListWidget(self)
@@ -49,7 +52,8 @@ class SheepPickerDialog(QDialog):
         btn_ok.clicked.connect(self._choose)
         self.list.itemDoubleClicked.connect(lambda _: self._choose())
 
-        self.ed_search.textChanged.connect(self._refresh)
+        self.ed_search.textChanged.connect(lambda: self._search_timer.start())
+        self._search_timer.timeout.connect(self._refresh)
         self._refresh()
 
     def _refresh(self):

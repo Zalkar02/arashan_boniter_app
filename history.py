@@ -3,7 +3,7 @@ from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QTableWidget, QTableWidgetItem, QMessageBox, QHeaderView
 )
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QPalette, QColor, QKeySequence
 from owner_history_detail import OwnerHistoryDetailWindow
 from services.db_service import get_db
@@ -26,6 +26,9 @@ class HistoryWindow(QMainWindow):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._suppress_restore = False
+        self._page = 1
+        self._page_size = 10
+        self._total = 0
         self.setWindowTitle("История хозяйств")
         self.resize(1200, 800)
         self.setMinimumSize(900, 600)
@@ -61,10 +64,23 @@ class HistoryWindow(QMainWindow):
         search_row = QHBoxLayout()
         self.ed_search = QLineEdit()
         self.ed_search.setPlaceholderText("Поиск по хозяйству, телефону или населённому пункту…")
+        self._search_timer = QTimer(self)
+        self._search_timer.setSingleShot(True)
+        self._search_timer.setInterval(4000)
         self.btn_refresh = QPushButton("Обновить")
         search_row.addWidget(self.ed_search, 1)
         search_row.addWidget(self.btn_refresh)
         v.addLayout(search_row)
+
+        pager = QHBoxLayout()
+        self.btn_prev = QPushButton("← Назад")
+        self.btn_next = QPushButton("Вперёд →")
+        self.lbl_page = QLabel("Страница 1")
+        pager.addWidget(self.btn_prev)
+        pager.addWidget(self.btn_next)
+        pager.addStretch(1)
+        pager.addWidget(self.lbl_page)
+        v.addLayout(pager)
 
         self.table = QTableWidget(0, 8, self)
         self.table.setHorizontalHeaderLabels([
@@ -105,12 +121,15 @@ class HistoryWindow(QMainWindow):
         self.btn_back.clicked.connect(self.go_back)
         self.btn_open.clicked.connect(self.open_owner_detail)
         self.btn_refresh.clicked.connect(self.reload)
-        self.ed_search.textChanged.connect(self.reload)
+        self.ed_search.textChanged.connect(lambda: self._search_timer.start())
         self.table.itemDoubleClicked.connect(lambda _: self.open_owner_detail())
+        self.btn_prev.clicked.connect(lambda: self._change_page(-1))
+        self.btn_next.clicked.connect(lambda: self._change_page(1))
+        self._search_timer.timeout.connect(lambda: self.reload(reset_page=True))
 
         self.reload()
 
-    def reload(self):
+    def reload(self, reset_page: bool = False):
         if db is None or Application is None or Sheep is None or Owner is None:
             QMessageBox.critical(self, "База данных", _db_error or "Недоступна")
             return
@@ -120,9 +139,17 @@ class HistoryWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Ошибка БД", str(e))
             return
+        if reset_page:
+            self._page = 1
 
-        self.table.setRowCount(len(rows))
-        for r, row in enumerate(rows):
+        self._total = len(rows)
+        start = max(0, (self._page - 1) * self._page_size)
+        end = start + self._page_size
+        page_rows = rows[start:end]
+        self._update_pager()
+
+        self.table.setRowCount(len(page_rows))
+        for r, row in enumerate(page_rows):
             values = format_owner_history_row(row)
             items = [QTableWidgetItem(value) for value in values]
             for it in items:
@@ -134,6 +161,21 @@ class HistoryWindow(QMainWindow):
 
         self.table.setColumnWidth(0, 280)
         self.table.setColumnWidth(2, 220)
+        self.statusBar().showMessage(f"Хозяйств: {self._total}")
+
+    def _update_pager(self):
+        total_pages = max(1, (self._total + self._page_size - 1) // self._page_size)
+        if self._page > total_pages:
+            self._page = total_pages
+        self.btn_prev.setEnabled(self._page > 1)
+        self.btn_next.setEnabled(self._page < total_pages)
+        self.lbl_page.setText(f"Страница {self._page} из {total_pages}")
+
+    def _change_page(self, step: int):
+        self._page += step
+        if self._page < 1:
+            self._page = 1
+        self.reload()
 
     def open_owner_detail(self):
         item = self.table.currentItem()

@@ -1,6 +1,7 @@
 import datetime
 
 from db.models import User
+from services.owner_search_service import _norm
 
 
 def owner_exists_by_username(session, username: str) -> bool:
@@ -13,6 +14,7 @@ def create_owner(session, payload: dict):
         username=payload["username"],
         password=payload["password"],
         name=payload["name"],
+        name_norm=_norm(payload.get("name") or ""),
         phone=payload.get("phone"),
         region=payload.get("region"),
         area=payload.get("area"),
@@ -28,6 +30,7 @@ def update_owner(session, owner, payload: dict):
     owner.username = payload["username"]
     owner.password = payload["password"]
     owner.name = payload["name"]
+    owner.name_norm = _norm(payload.get("name") or "")
     owner.phone = payload.get("phone")
     owner.region = payload.get("region")
     owner.area = payload.get("area")

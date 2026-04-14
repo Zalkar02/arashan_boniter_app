@@ -1,6 +1,7 @@
 import datetime
 
 from db.models import Application, Lamb, Owner, Sheep
+from services.owner_search_service import _norm
 
 
 def save_sheep_bundle(session, payload: dict):
@@ -18,6 +19,7 @@ def save_sheep_bundle(session, payload: dict):
         "created_by_user_id": payload.get("created_by_user_id"),
         "id_n": idn,
         "nick": payload.get("nick"),
+        "nick_norm": _norm(payload.get("nick") or ""),
         "dob": payload["dob"],
         "gender": payload["gender"],
         "color_id": payload["color_id"],

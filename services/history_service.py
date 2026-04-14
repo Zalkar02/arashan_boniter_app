@@ -1,5 +1,6 @@
 import datetime
 from sqlalchemy import case, func, or_
+from services.owner_search_service import _norm
 
 
 RECENT_DAYS = 30
@@ -33,6 +34,7 @@ def _resolve_sheep_owner(sheep, current_owner_map):
 
 def get_owner_history_rows(session, application_model, sheep_model, owner_model, raw_query: str):
     query = (raw_query or "").strip()
+    query_norm = _norm(query) if query else ""
     recent_since = datetime.date.today() - datetime.timedelta(days=RECENT_DAYS)
     sheep_query = session.query(sheep_model).filter_by(is_deleted=False)
     if query:
@@ -118,8 +120,8 @@ def get_owner_history_rows(session, application_model, sheep_model, owner_model,
                 str(getattr(owner, "region", "") or ""),
             ]
         )
-        haystack = haystack.casefold()
-        if query and query.casefold() not in haystack:
+        haystack_norm = _norm(haystack)
+        if query and query_norm not in haystack_norm:
             continue
         filtered.append(bucket)
 

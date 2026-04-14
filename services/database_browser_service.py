@@ -1,7 +1,16 @@
 from sqlalchemy import func, or_
 
 
-def get_owner_rows(session, user_model, sheep_model, owner_model, query_text: str = "", region: str = ""):
+def get_owner_rows(
+    session,
+    user_model,
+    sheep_model,
+    owner_model,
+    query_text: str = "",
+    region: str = "",
+    offset: int = 0,
+    limit: int = 50,
+):
     query_text = (query_text or "").strip()
     region = (region or "").strip()
 
@@ -30,9 +39,15 @@ def get_owner_rows(session, user_model, sheep_model, owner_model, query_text: st
 
     if query_text:
         like = f"%{query_text}%"
+        has_non_ascii = any(ord(ch) > 127 for ch in query_text)
+        name_filter = (
+            user_model.name_norm.like(f"%{query_text.casefold()}%")
+            if has_non_ascii
+            else user_model.name.ilike(like)
+        )
         query = query.filter(
             or_(
-                user_model.name.ilike(like),
+                name_filter,
                 user_model.username.ilike(like),
                 user_model.phone.ilike(like),
                 user_model.region.ilike(like),
@@ -42,12 +57,15 @@ def get_owner_rows(session, user_model, sheep_model, owner_model, query_text: st
             )
         )
 
+    total = query.count()
     rows = (
         query
         .order_by(user_model.name.asc(), user_model.id.desc())
+        .offset(max(0, int(offset)))
+        .limit(max(1, int(limit)))
         .all()
     )
-    return [{"user": user, "sheep_count": int(sheep_count or 0)} for user, sheep_count in rows]
+    return [{"user": user, "sheep_count": int(sheep_count or 0)} for user, sheep_count in rows], total
 
 
 def get_owner_regions(session, user_model):
@@ -70,6 +88,8 @@ def get_sheep_rows(
     gender: str = "",
     paid: str = "",
     synced: str = "",
+    offset: int = 0,
+    limit: int = 50,
 ):
     query_text = (query_text or "").strip()
     query = (
@@ -91,17 +111,33 @@ def get_sheep_rows(
         query = query.filter(sheep_model.synced == False)
 
     if query_text:
+        has_non_ascii = any(ord(ch) > 127 for ch in query_text)
         like = f"%{query_text}%"
-        query = query.filter(
-            or_(
-                sheep_model.id_n.ilike(like),
-                sheep_model.nick.ilike(like),
-                user_model.name.ilike(like),
-                color_model.name.ilike(like),
+        if has_non_ascii:
+            norm = query_text.casefold()
+            query = query.filter(
+                or_(
+                    sheep_model.id_n.ilike(like),
+                    sheep_model.nick_norm.like(f"%{norm}%"),
+                )
             )
-        )
+        else:
+            query = query.filter(
+                or_(
+                    sheep_model.id_n.ilike(like),
+                    sheep_model.nick.ilike(like),
+                    user_model.name.ilike(like),
+                    color_model.name.ilike(like),
+                )
+            )
 
-    rows = query.order_by(sheep_model.id.desc()).all()
+    total = query.count()
+    rows = (
+        query.order_by(sheep_model.id.desc())
+        .offset(max(0, int(offset)))
+        .limit(max(1, int(limit)))
+        .all()
+    )
     return [
         {
             "sheep": sheep,
@@ -109,4 +145,4 @@ def get_sheep_rows(
             "color_name": str(color_name or ""),
         }
         for sheep, owner_name, color_name in rows
-    ]
+    ], total
