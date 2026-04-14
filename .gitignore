@@ -144,3 +144,5 @@ GitHub.sublime-settings
 .app_state/exports/
 .app_state/print_settings.json
 sheep_local.db
+
+last_sync.txt

@@ -547,6 +547,9 @@ class OwnerHistoryDetailWindow(QMainWindow):
             self.sync_dialog.close()
             self.sync_dialog = None
         self.reload()
+        prev = getattr(self, "prev", None)
+        if prev is not None and hasattr(prev, "reload"):
+            prev.reload()
         self.statusBar().showMessage("Синхронизация хозяйства завершена.", 5000)
         QMessageBox.information(self, "Синхронизация", "Синхронизация хозяйства завершена.")
         self.sync_worker = None
