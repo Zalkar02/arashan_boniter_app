@@ -234,6 +234,10 @@ class SheepCreateWindow(QMainWindow):
                     self.cb_color.addItem(color.name, color.id)
             except Exception:
                 pass
+        for i in range(self.cb_color.count()):
+            if (self.cb_color.itemText(i) or "").strip().casefold() == "красный":
+                self.cb_color.setCurrentIndex(i)
+                break
         form.addRow(self._lab("Окрас*"), self.cb_color)
         return group
 
@@ -413,6 +417,10 @@ class SheepCreateWindow(QMainWindow):
         form.addRow(self._lab("Конституция"), self.cb_fur)
         form.addRow(self._lab("Классность"), self.cb_rank)
         form.addRow(self._lab("Примечание"), self.txt_note)
+
+        self.cb_kurdyk.setCurrentIndex(2)
+        self.cb_size.setCurrentIndex(1)
+        self.cb_fur.setCurrentIndex(1)
 
         lamb_group = QGroupBox("Данные ягнёнка")
         parent_layout.addWidget(lamb_group, 0)
@@ -714,9 +722,9 @@ class SheepCreateWindow(QMainWindow):
         ):
             sp.setValue(0)
         self.sp_exterior.setValue(1)
-        self.cb_kurdyk.setCurrentIndex(0)
-        self.cb_size.setCurrentIndex(0)
-        self.cb_fur.setCurrentIndex(0)
+        self.cb_kurdyk.setCurrentIndex(2)
+        self.cb_size.setCurrentIndex(1)
+        self.cb_fur.setCurrentIndex(1)
         self.cb_rank.setCurrentIndex(0)
         self.txt_note.clear()
 
