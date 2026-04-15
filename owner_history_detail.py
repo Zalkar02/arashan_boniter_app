@@ -275,13 +275,15 @@ class OwnerHistoryDetailWindow(QMainWindow):
         filters.addStretch(1)
         layout.addLayout(filters)
 
-        self.table = QTableWidget(0, 9, self)
+        self.table = QTableWidget(0, 11, self)
         self.table.setHorizontalHeaderLabels(
             [
                 "",
                 "Тип",
                 "ID №",
                 "Кличка",
+                "Пол",
+                "Возраст",
                 "Дата внесения",
                 "Бонитировка",
                 "Синхронизация",
@@ -324,6 +326,8 @@ class OwnerHistoryDetailWindow(QMainWindow):
         header_view.setSectionResizeMode(6, QHeaderView.ResizeToContents)
         header_view.setSectionResizeMode(7, QHeaderView.ResizeToContents)
         header_view.setSectionResizeMode(8, QHeaderView.ResizeToContents)
+        header_view.setSectionResizeMode(9, QHeaderView.ResizeToContents)
+        header_view.setSectionResizeMode(10, QHeaderView.ResizeToContents)
         layout.addWidget(self.table, 1)
 
         quick_actions = QHBoxLayout()
@@ -460,7 +464,9 @@ class OwnerHistoryDetailWindow(QMainWindow):
 
         self.table.setColumnWidth(0, 36)
         self.table.setColumnWidth(1, 120)
-        self.table.setColumnWidth(4, 110)
+        self.table.setColumnWidth(4, 90)
+        self.table.setColumnWidth(5, 80)
+        self.table.setColumnWidth(6, 110)
         self.statusBar().showMessage(f"Овец в хозяйстве: {len(self.filtered_rows)} из {len(self.rows)}")
 
     def _selected_rows(self):

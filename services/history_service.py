@@ -253,10 +253,21 @@ def get_owner_detail_rows(session, user_model, sheep_model, application_model, o
 
 def format_owner_sheep_row(row: dict):
     sheep = row["sheep"]
+    gender = "Баран" if str(getattr(sheep, "gender", "") or "") == "B" else "Овца"
+    dob = getattr(sheep, "dob", None)
+    age = ""
+    if dob:
+        today = datetime.date.today()
+        years = today.year - dob.year
+        if (today.month, today.day) < (dob.month, dob.day):
+            years -= 1
+        age = f"{max(0, years)} г."
     return [
         row["record_type"],
         str(getattr(sheep, "id_n", "") or ""),
         str(getattr(sheep, "nick", "") or ""),
+        gender,
+        age,
         sheep.date_filling.strftime("%d.%m.%Y") if getattr(sheep, "date_filling", None) else "",
         "Да" if row["has_applications"] else "Нет",
         row["sync_status"],
