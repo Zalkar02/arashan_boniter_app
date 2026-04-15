@@ -22,6 +22,7 @@ class PaymentQrDialog(QDialog):
         super().__init__(parent)
         self.payment_token = payment_token
         self.seconds_left = 60
+        self.should_check_payment = False
 
         self.setWindowTitle("QR для оплаты")
         self.resize(420, 560)
@@ -63,12 +64,15 @@ class PaymentQrDialog(QDialog):
         self._update_timer_label()
 
         actions = QHBoxLayout()
+        btn_check = QPushButton("Проверить оплату")
         btn_close = QPushButton("Закрыть")
         actions.addStretch(1)
+        actions.addWidget(btn_check)
         actions.addWidget(btn_close)
         layout.addLayout(actions)
 
         btn_close.clicked.connect(self.accept)
+        btn_check.clicked.connect(self._check_and_close)
         self._timer = QTimer(self)
         self._timer.setInterval(1000)
         self._timer.timeout.connect(self._tick)
@@ -81,9 +85,14 @@ class PaymentQrDialog(QDialog):
         self.seconds_left -= 1
         if self.seconds_left <= 0:
             self._timer.stop()
+            self.should_check_payment = True
             self.accept()
             return
         self._update_timer_label()
+
+    def _check_and_close(self):
+        self.should_check_payment = True
+        self.accept()
 
     def _build_qr_pixmap(self, payment_token: str) -> QPixmap:
         qr_image = qrcode.make(payment_token)

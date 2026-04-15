@@ -135,6 +135,11 @@ class HistoryWindow(QMainWindow):
             return
 
         try:
+            db.expire_all()
+        except Exception:
+            pass
+
+        try:
             rows = get_owner_history_rows(db, Application, Sheep, Owner, self.ed_search.text())
         except Exception as e:
             QMessageBox.critical(self, "Ошибка БД", str(e))

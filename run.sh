@@ -20,5 +20,8 @@ cd "$PROJECT_DIR"
 if [[ -f "$PROJECT_DIR/sheep_local.example.db" && ! -f "$PROJECT_DIR/sheep_local.db" ]]; then
   cp "$PROJECT_DIR/sheep_local.example.db" "$PROJECT_DIR/sheep_local.db"
 fi
+if [[ -f "$PROJECT_DIR/last_sync.example.txt" && ! -f "$PROJECT_DIR/last_sync.txt" ]]; then
+  cp "$PROJECT_DIR/last_sync.example.txt" "$PROJECT_DIR/last_sync.txt"
+fi
 "$VENV_PYTHON" migrate_local_db.py
 exec "$VENV_PYTHON" app.py

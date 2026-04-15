@@ -213,6 +213,8 @@ def get_owner_detail_rows(session, user_model, sheep_model, application_model, o
         has_applications = bool(owner_apps)
         latest_application = _get_latest_application(owner_apps)
         sheep_synced = bool(getattr(sheep, "synced", False))
+        apps_synced = all(bool(getattr(app, "synced", False)) for app in owner_apps) if owner_apps else True
+        row_synced = sheep_synced and apps_synced
         sheep_paid = bool(getattr(sheep, "is_paid", False))
         latest_paid = bool(getattr(latest_application, "is_paid", False)) if latest_application else False
         fully_paid = sheep_paid and (latest_application is None or latest_paid)
@@ -226,10 +228,11 @@ def get_owner_detail_rows(session, user_model, sheep_model, application_model, o
                 "latest_application": latest_application,
                 "has_applications": has_applications,
                 "record_type": record_type,
-                "sync_status": "Синхронизировано" if sheep_synced else "Не синхронизировано",
+                "sync_status": "Синхронизировано" if row_synced else "Не синхронизировано",
+                "is_synced": row_synced,
                 "payment_status": _get_payment_status(sheep_paid, has_unpaid_application),
                 "passport_status": "Доступен" if fully_paid else "Недоступен",
-                "can_pay": sheep_synced and (not sheep_paid or has_unpaid_application),
+                "can_pay": row_synced and (not sheep_paid or has_unpaid_application),
                 "can_print": fully_paid,
                 "is_unpaid": not fully_paid,
             }

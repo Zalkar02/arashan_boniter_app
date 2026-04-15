@@ -376,6 +376,11 @@ class OwnerHistoryDetailWindow(QMainWindow):
             return
 
         try:
+            db.expire_all()
+        except Exception:
+            pass
+
+        try:
             detail = get_owner_detail_rows(db, User, Sheep, Application, Owner, self.owner_id)
         except Exception as e:
             QMessageBox.critical(self, "Ошибка БД", str(e))
@@ -427,9 +432,10 @@ class OwnerHistoryDetailWindow(QMainWindow):
                 continue
             if paid_filter == "unpaid" and not row.get("is_unpaid"):
                 continue
-            if sync_filter == "synced" and not bool(getattr(sheep, "synced", False)):
+            row_synced = bool(row.get("is_synced", getattr(sheep, "synced", False)))
+            if sync_filter == "synced" and not row_synced:
                 continue
-            if sync_filter == "unsynced" and bool(getattr(sheep, "synced", False)):
+            if sync_filter == "unsynced" and row_synced:
                 continue
             if printed_filter == "printed" and not bool(getattr(sheep, "is_printed", False)):
                 continue
@@ -551,6 +557,10 @@ class OwnerHistoryDetailWindow(QMainWindow):
         if self.sync_dialog is not None:
             self.sync_dialog.close()
             self.sync_dialog = None
+        try:
+            db.expire_all()
+        except Exception:
+            pass
         self.reload()
         prev = getattr(self, "prev", None)
         if prev is not None and hasattr(prev, "reload"):
@@ -674,6 +684,8 @@ class OwnerHistoryDetailWindow(QMainWindow):
                 parent=self,
             )
             dlg.exec_()
+            if dlg.should_check_payment:
+                self._refresh_payment_status_for_rows(pending, show_message=True)
             return
 
         message = (
@@ -693,18 +705,23 @@ class OwnerHistoryDetailWindow(QMainWindow):
             return
 
         try:
-            results = refresh_payment_statuses(db, selected)
+            self._refresh_payment_status_for_rows(selected, show_message=True)
         except Exception as e:
             QMessageBox.warning(self, "Проверка оплаты", str(e))
             return
 
+    def _refresh_payment_status_for_rows(self, rows, show_message: bool = False):
+        results = refresh_payment_statuses(db, rows)
         self.reload()
+        if not show_message:
+            return results
         paid_count = sum(1 for item in results if item.get("status") == "paid")
         QMessageBox.information(
             self,
             "Проверка оплаты",
             f"Проверено оплат: {len(results)}.\nОплачено: {paid_count}.",
         )
+        return results
 
     def open_print_dialog(self):
         selected = self._selected_rows()
