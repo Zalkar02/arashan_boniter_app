@@ -747,6 +747,24 @@ def generate_passports_pdf(session, rows: Iterable[dict], owner=None):
 
 
 def list_system_printers():
+    if os.name == "nt":
+        powershell = shutil.which("powershell") or shutil.which("pwsh")
+        if powershell is None:
+            return []
+        result = subprocess.run(
+            [powershell, "-NoProfile", "-Command", "Get-Printer | Select-Object -ExpandProperty Name"],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            return []
+        printers = []
+        for line in (result.stdout or "").splitlines():
+            printer = line.strip()
+            if printer and printer not in printers:
+                printers.append(printer)
+        return printers
+
     lpstat_path = shutil.which("lpstat")
     if lpstat_path is None:
         return []
@@ -874,14 +892,28 @@ def clear_pending_print_job():
 
 
 def print_pdf_page_range(pdf_path: str, start_page: int, end_page: int, printer_name: str | None = None):
-    lp_path = shutil.which("lp")
-    if lp_path is None:
-        raise RuntimeError("Не найдена команда lp для отправки на печать.")
-
     if start_page <= 0 or end_page < start_page:
         raise RuntimeError("Некорректный диапазон страниц для печати.")
 
     selected_printer = printer_name if printer_name is not None else get_saved_printer()
+
+    if os.name == "nt":
+        try:
+            if selected_printer:
+                os.startfile(pdf_path, "printto", f'"{selected_printer}"')
+            else:
+                os.startfile(pdf_path, "print")
+        except AttributeError:
+            raise RuntimeError("Печать через os.startfile недоступна в этой сборке Python.")
+        except OSError as exc:
+            raise RuntimeError(f"Не удалось отправить файл на печать: {exc}") from exc
+        if selected_printer:
+            return f"Документ отправлен на печать в принтер: {selected_printer}"
+        return "Документ отправлен на печать в принтер по умолчанию."
+
+    lp_path = shutil.which("lp")
+    if lp_path is None:
+        raise RuntimeError("Не найдена команда lp для отправки на печать.")
 
     cmd = [lp_path, "-o", "media=A4", "-P", f"{start_page}-{end_page}"]
     if selected_printer:
