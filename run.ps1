@@ -3,6 +3,17 @@ $ProjectDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $VenvPython = Join-Path $ProjectDir ".venv\Scripts\python.exe"
 $LegacyVenvPython = Join-Path $ProjectDir "env\Scripts\python.exe"
 
+function Invoke-Checked {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string[]]$Command
+  )
+  & $Command[0] $Command[1..($Command.Length - 1)]
+  if ($LASTEXITCODE -ne 0) {
+    throw "Command failed with exit code $LASTEXITCODE: $($Command -join ' ')"
+  }
+}
+
 if (Test-Path $VenvPython) {
   $Python = $VenvPython
 } elseif (Test-Path $LegacyVenvPython) {
@@ -22,5 +33,5 @@ if ((Test-Path "$ProjectDir\last_sync.example.txt") -and -not (Test-Path "$Proje
   Copy-Item "$ProjectDir\last_sync.example.txt" "$ProjectDir\last_sync.txt"
 }
 
-& $Python migrate_local_db.py
-& $Python app.py
+Invoke-Checked @($Python, "migrate_local_db.py")
+Invoke-Checked @($Python, "app.py")

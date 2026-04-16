@@ -5,6 +5,18 @@ param(
 $ErrorActionPreference = "Stop"
 $ProjectDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $VenvDir = Join-Path $ProjectDir ".venv"
+$ReqFile = Join-Path $ProjectDir "requirements-windows.txt"
+
+function Invoke-Checked {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string[]]$Command
+  )
+  & $Command[0] $Command[1..($Command.Length - 1)]
+  if ($LASTEXITCODE -ne 0) {
+    throw "Command failed with exit code $LASTEXITCODE: $($Command -join ' ')"
+  }
+}
 
 Set-Location $ProjectDir
 
@@ -14,15 +26,18 @@ if (-not (Get-Command $PythonBin -ErrorAction SilentlyContinue)) {
 }
 
 if (-not (Test-Path $VenvDir)) {
-  & $PythonBin -m venv $VenvDir
+  Invoke-Checked @($PythonBin, "-m", "venv", $VenvDir)
 }
 
 $VenvPython = Join-Path $VenvDir "Scripts\python.exe"
 $VenvPip = Join-Path $VenvDir "Scripts\pip.exe"
+if (-not (Test-Path $ReqFile)) {
+  $ReqFile = Join-Path $ProjectDir "requirements.txt"
+}
 
-& $VenvPython -m pip install --upgrade pip
-& $VenvPip install -r requirements.txt
-& $VenvPython migrate_local_db.py
+Invoke-Checked @($VenvPython, "-m", "pip", "install", "--upgrade", "pip")
+Invoke-Checked @($VenvPip, "install", "-r", $ReqFile)
+Invoke-Checked @($VenvPython, "migrate_local_db.py")
 
 if ((Test-Path "$ProjectDir\.app_state\print_settings.example.json") -and -not (Test-Path "$ProjectDir\.app_state\print_settings.json")) {
   Copy-Item "$ProjectDir\.app_state\print_settings.example.json" "$ProjectDir\.app_state\print_settings.json"
