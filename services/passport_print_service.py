@@ -17,6 +17,7 @@ from reportlab.pdfgen import canvas
 from db.models import Application, Owner
 from resource_paths import resource_path
 from services.pdf_runtime import import_pymupdf
+from services.owner_search_service import AREA_LABELS, REGION_LABELS
 from state_paths import STATE_DIR, ensure_state_dir
 
 fitz = import_pymupdf()
@@ -197,14 +198,49 @@ def _get_owner_link(session, sheep, owner):
 def _owner_place(owner):
     if owner is None:
         return ""
+    name = str(getattr(owner, "name", "") or "").strip()
+    patronymic_suffixes = (
+        "ович",
+        "евич",
+        "ич",
+        "овна",
+        "евна",
+        "ична",
+    )
+    parts_name = [p for p in name.split() if p]
+    filtered_name_parts = []
+    for token in parts_name:
+        clean = token.strip(".,;:!?'\"()[]{}").lower()
+        if any(clean.endswith(suffix) for suffix in patronymic_suffixes):
+            continue
+        filtered_name_parts.append(token)
+    short_name = " ".join(filtered_name_parts)
+    area_raw = str(getattr(owner, "area", "") or "").strip()
+    region_raw = str(getattr(owner, "region", "") or "").strip()
+    area_label = AREA_LABELS.get(area_raw, area_raw)
+    if area_label.lower().endswith(" район"):
+        area_label = area_label[:-6].strip()
+    region_label = REGION_LABELS.get(region_raw, region_raw)
     parts = [
-        (owner.name or "").strip(),
-        (owner.area or "").strip(),
-        (owner.region or "").strip(),
-        (owner.city or "").strip(),
-        (owner.home or "").strip(),
+        short_name,
+        area_label,
+        region_label,
+        str(getattr(owner, "city", "") or "").strip(),
     ]
     return ", ".join([part for part in parts if part])
+
+
+def _get_first_owner_for_birth_place(session, sheep, fallback_owner=None):
+    if sheep is None:
+        return fallback_owner
+    first_link = (
+        session.query(Owner)
+        .filter(Owner.sheep_id == sheep.id)
+        .order_by(Owner.date1.asc().nullslast(), Owner.id.asc())
+        .first()
+    )
+    first_owner = getattr(first_link, "owner", None) if first_link is not None else None
+    return first_owner or fallback_owner
 
 
 def _template_paths(gender: str):
@@ -333,7 +369,6 @@ def _draw_cell_value(pdf: canvas.Canvas, center_x_mm: float, y_mm: float, value,
 
 
 def _draw_row_values_pt(pdf: canvas.Canvas, x_lines, top_y, bottom_y, values, font_size=7):
-    pdf.setFont(FONT_NAME, font_size)
     baseline = PAGE_HEIGHT - ((top_y + bottom_y) / 2) - (font_size / 3)
     for index, value in enumerate(values):
         text = str(value or "").strip()
@@ -342,6 +377,11 @@ def _draw_row_values_pt(pdf: canvas.Canvas, x_lines, top_y, bottom_y, values, fo
         left = x_lines[index]
         right = x_lines[index + 1]
         center_x = (left + right) / 2
+        cell_width = max(1.0, right - left - 2.0)
+        fitted_size = font_size
+        while fitted_size > 4.5 and pdf.stringWidth(text, FONT_NAME, fitted_size) > cell_width:
+            fitted_size -= 0.2
+        pdf.setFont(FONT_NAME, fitted_size)
         pdf.drawCentredString(center_x, baseline, text)
 
 
@@ -371,6 +411,18 @@ def _draw_wrapped_text(pdf: canvas.Canvas, x_mm: float, y_mm: float, value, widt
         pdf.drawString(mm(x_mm), mm(y_mm - line_step_mm * index), line)
 
 
+def _rank_label(value):
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    upper = text.upper()
+    if upper == "E":
+        return "Элита"
+    if upper == "B":
+        return "Брак"
+    return text
+
+
 def _build_main_row_values(application, sheep_dob):
     return [
         _fmt_date(getattr(application, "date", None)),
@@ -393,7 +445,7 @@ def _build_main_row_values(application, sheep_dob):
         _fmt_number(getattr(application, "exterior", None)),
         _size_label(getattr(application, "size", None)),
         _fur_label(getattr(application, "fur_structure", None)),
-        _fmt_number(getattr(application, "rank", None)),
+        _rank_label(getattr(application, "rank", None)),
         str(getattr(application, "note", None) or ""),
         "",
     ]
@@ -421,7 +473,7 @@ def _build_parent_row_values(application, parent_dob):
         _fmt_number(getattr(application, "exterior", None)),
         _size_label(getattr(application, "size", None)),
         _fur_label(getattr(application, "fur_structure", None)),
-        _fmt_number(getattr(application, "rank", None)),
+        _rank_label(getattr(application, "rank", None)),
         str(getattr(application, "note", None) or ""),
         "",
     ]
@@ -509,12 +561,13 @@ def _draw_main_page(pdf: canvas.Canvas, session, row: dict, owner, draw_backgrou
         )
 
 
-def _build_face_pdf_page(row: dict, owner):
+def _build_face_pdf_page(session, row: dict, owner):
     sheep = row["sheep"]
     lamb = getattr(sheep, "lamb", None)
     face_template_pdf, _ = _template_paths(sheep.gender or "O")
     doc = fitz.open(face_template_pdf)
     page = doc[0]
+    birth_owner = _get_first_owner_for_birth_place(session, sheep, fallback_owner=owner)
 
     color_name = getattr(getattr(sheep, "color", None), "name", "") or ""
     if (sheep.gender or "O") == "O":
@@ -528,7 +581,7 @@ def _build_face_pdf_page(row: dict, owner):
         "{dob}": _fmt_date(getattr(sheep, "dob", None)),
         "{weight}": _fmt_number(getattr(lamb, "weight", None)),
         "{birthCount}": _fmt_number(getattr(lamb, "litter_size", None)),
-        "{birth_place}": _owner_place(owner),
+        "{birth_place}": _owner_place(birth_owner),
     }
     for placeholder, value in replacements.items():
         _replace_placeholder(
@@ -728,7 +781,7 @@ def generate_passports_pdf(session, rows: Iterable[dict], owner=None):
     back_pages = []
 
     for row in printable_rows:
-        template_page = _build_face_pdf_page(row, owner)
+        template_page = _build_face_pdf_page(session, row, owner)
         overlay_page = _build_overlay_page(_draw_main_page, session, row, owner, False)
         template_page.merge_page(overlay_page)
         front_pages.append(template_page)

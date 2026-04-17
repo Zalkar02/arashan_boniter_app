@@ -717,17 +717,26 @@ class OwnerHistoryDetailWindow(QMainWindow):
             return
 
     def _refresh_payment_status_for_rows(self, rows, show_message: bool = False):
-        results = refresh_payment_statuses(db, rows)
+        summary = refresh_payment_statuses(db, rows)
         self.reload()
         if not show_message:
-            return results
-        paid_count = sum(1 for item in results if item.get("status") == "paid")
+            return summary
+        checked_total = int(summary.get("checked_references", 0)) + int(summary.get("checked_items", 0))
+        paid_total = int(summary.get("paid_references", 0)) + int(summary.get("paid_items", 0))
+        sources = []
+        if summary.get("used_reference_check"):
+            sources.append("по reference")
+        if summary.get("used_items_check"):
+            sources.append("по списку ID")
+        source_text = ", ".join(sources) if sources else "—"
         QMessageBox.information(
             self,
             "Проверка оплаты",
-            f"Проверено оплат: {len(results)}.\nОплачено: {paid_count}.",
+            f"Проверено: {checked_total}.\n"
+            f"Оплачено: {paid_total}.\n"
+            f"Источник проверки: {source_text}.",
         )
-        return results
+        return summary
 
     def open_print_dialog(self):
         selected = self._selected_rows()
