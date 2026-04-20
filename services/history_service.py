@@ -4,6 +4,37 @@ from services.owner_search_service import _norm
 
 
 RECENT_DAYS = 30
+SQLITE_SAFE_IN_LIMIT = 900
+
+
+def _chunked(values, size=SQLITE_SAFE_IN_LIMIT):
+    values = list(values or [])
+    if not values:
+        return []
+    return [values[index:index + size] for index in range(0, len(values), size)]
+
+
+def _load_current_owner_map(session, owner_model, sheep_ids=None):
+    current_owner_map = {}
+    chunks = _chunked(sheep_ids)
+    if not chunks:
+        return _build_current_owner_map(session, owner_model, sheep_ids=None)
+
+    for sheep_id_chunk in chunks:
+        current_owner_map.update(
+            _build_current_owner_map(session, owner_model, sheep_ids=sheep_id_chunk)
+        )
+    return current_owner_map
+
+
+def _load_rows_by_ids(session, model, id_attr, ids, *filters):
+    rows = []
+    for id_chunk in _chunked(ids):
+        query = session.query(model).filter(id_attr.in_(id_chunk))
+        for filter_clause in filters:
+            query = query.filter(filter_clause)
+        rows.extend(query.all())
+    return rows
 
 
 def _build_current_owner_map(session, owner_model, sheep_ids=None):
@@ -44,10 +75,10 @@ def get_owner_history_rows(session, application_model, sheep_model, owner_model,
                 sheep_model.id_n.ilike(like),
                 sheep_model.nick.ilike(like),
             )
-        )
+    )
     sheep_rows = sheep_query.order_by(sheep_model.date_filling.desc().nullslast(), sheep_model.id.desc()).all()
     sheep_ids = [sheep.id for sheep in sheep_rows]
-    current_owner_map = _build_current_owner_map(session, owner_model, sheep_ids=sheep_ids)
+    current_owner_map = _load_current_owner_map(session, owner_model, sheep_ids=sheep_ids)
     application_stats = (
         session.query(
             application_model.sheep_id.label("sheep_id"),
@@ -176,9 +207,13 @@ def get_owner_detail_rows(session, user_model, sheep_model, application_model, o
     missing_linked_ids = [sheep_id for sheep_id in linked_sheep_ids if sheep_id not in direct_ids]
     if missing_linked_ids:
         sheep_rows.extend(
-            session.query(sheep_model)
-            .filter(sheep_model.is_deleted.is_(False), sheep_model.id.in_(missing_linked_ids))
-            .all()
+            _load_rows_by_ids(
+                session,
+                sheep_model,
+                sheep_model.id,
+                missing_linked_ids,
+                sheep_model.is_deleted.is_(False),
+            )
         )
 
     sheep_rows.sort(
@@ -190,12 +225,13 @@ def get_owner_detail_rows(session, user_model, sheep_model, application_model, o
     )
 
     sheep_ids = [sheep.id for sheep in sheep_rows]
-    current_owner_map = _build_current_owner_map(session, owner_model, sheep_ids=sheep_ids)
-    applications = (
-        session.query(application_model)
-        .filter(application_model.is_deleted.is_(False), application_model.sheep_id.in_(sheep_ids))
-        .all()
-        if sheep_ids else []
+    current_owner_map = _load_current_owner_map(session, owner_model, sheep_ids=sheep_ids)
+    applications = _load_rows_by_ids(
+        session,
+        application_model,
+        application_model.sheep_id,
+        sheep_ids,
+        application_model.is_deleted.is_(False),
     )
 
     app_by_sheep_id = {}
