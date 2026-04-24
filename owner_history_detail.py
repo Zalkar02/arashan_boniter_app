@@ -26,10 +26,8 @@ from services.history_service import format_owner_sheep_row, get_owner_detail_ro
 from services.passport_print_service import (
     clear_pending_print_job,
     get_back_print_order,
-    get_pending_print_job,
     get_print_batch_size,
     print_pdf_subset,
-    save_pending_print_job,
     generate_passports_pdf,
 )
 from services.payment_service import create_payment, refresh_payment_statuses
@@ -78,12 +76,18 @@ class PrintBatchDialog(QDialog):
         self.owner_id = owner_id
         self.batch_index = 0
         self.current_pdf_path = ""
-        self.front_printed = False
-        self.back_printed = False
+        self.batch_states = [
+            {
+                "pdf_path": "",
+                "front_printed": False,
+                "back_printed": False,
+            }
+            for _ in batches
+        ]
 
         self.setWindowTitle("Печать паспортов")
         self.setModal(True)
-        self.resize(620, 260)
+        self.resize(760, 300)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(20, 20, 20, 20)
@@ -100,21 +104,33 @@ class PrintBatchDialog(QDialog):
         self.lbl_info.setWordWrap(True)
         root.addWidget(self.lbl_info)
 
+        nav = QHBoxLayout()
+        nav.addWidget(QLabel("Пачка:"))
+        self.cmb_batch = QComboBox()
+        for idx, batch in enumerate(self.batches, start=1):
+            self.cmb_batch.addItem(f"{idx} ({len(batch)} шт.)", idx - 1)
+        self.btn_prev = QPushButton("Предыдущая")
+        self.btn_next = QPushButton("Следующая")
+        nav.addWidget(self.cmb_batch, 1)
+        nav.addWidget(self.btn_prev)
+        nav.addWidget(self.btn_next)
+        root.addLayout(nav)
+
         buttons = QHBoxLayout()
         self.btn_front = QPushButton("Печать лицевой")
         self.btn_back = QPushButton("Печать оборота")
-        self.btn_next = QPushButton("Следующая пачка")
         self.btn_close = QPushButton("Закрыть")
         buttons.addWidget(self.btn_front)
         buttons.addWidget(self.btn_back)
-        buttons.addWidget(self.btn_next)
         buttons.addStretch(1)
         buttons.addWidget(self.btn_close)
         root.addLayout(buttons)
 
         self.btn_front.clicked.connect(self.print_front)
         self.btn_back.clicked.connect(self.print_back)
-        self.btn_next.clicked.connect(self.next_batch)
+        self.btn_prev.clicked.connect(lambda: self._set_batch_index(self.batch_index - 1))
+        self.btn_next.clicked.connect(lambda: self._set_batch_index(self.batch_index + 1))
+        self.cmb_batch.currentIndexChanged.connect(self._on_batch_changed)
         self.btn_close.clicked.connect(self.accept)
 
         self._prepare_current_batch()
@@ -127,60 +143,57 @@ class PrintBatchDialog(QDialog):
             self.btn_front.setEnabled(False)
             self.btn_back.setEnabled(False)
             self.btn_next.setEnabled(False)
+            self.btn_prev.setEnabled(False)
+            self.cmb_batch.setEnabled(False)
             return
 
-        batch = self.batches[self.batch_index]
-        self.current_pdf_path = generate_passports_pdf(self.db, batch, owner=self.owner_data)
-        self.front_printed = False
-        self.back_printed = False
-        clear_pending_print_job()
+        state = self.batch_states[self.batch_index]
+        if not state.get("pdf_path"):
+            batch = self.batches[self.batch_index]
+            state["pdf_path"] = generate_passports_pdf(self.db, batch, owner=self.owner_data)
+        self.current_pdf_path = state["pdf_path"]
         self._refresh_state()
 
     def _refresh_state(self):
         total_batches = len(self.batches)
         batch = self.batches[self.batch_index]
+        state = self.batch_states[self.batch_index]
         self.lbl_title.setText(f"Пачка {self.batch_index + 1} из {total_batches}")
         self.lbl_info.setText(
             "\n".join(
                 [
                     f"Карточек в пачке: {len(batch)}",
-                    "1. Нажмите «Печать лицевой».",
-                    "2. Переверните листы.",
-                    "3. Нажмите «Печать оборота».",
-                    "4. Перейдите к следующей пачке.",
+                    f"Лицевая: {'напечатана' if state.get('front_printed') else 'не печаталась'}",
+                    f"Оборот: {'напечатан' if state.get('back_printed') else 'не печатался'}",
+                    "Можно свободно печатать лицевую/оборот и переключаться между пачками.",
                 ]
             )
         )
-        self.btn_front.setEnabled(not self.front_printed)
-        self.btn_back.setEnabled(self.front_printed and not self.back_printed)
-        self.btn_next.setEnabled(self.back_printed)
+        self.btn_front.setEnabled(bool(self.current_pdf_path))
+        self.btn_back.setEnabled(bool(self.current_pdf_path))
+        self.btn_prev.setEnabled(self.batch_index > 0)
+        self.btn_next.setEnabled(self.batch_index < total_batches - 1)
+        if self.cmb_batch.currentIndex() != self.batch_index:
+            self.cmb_batch.blockSignals(True)
+            self.cmb_batch.setCurrentIndex(self.batch_index)
+            self.cmb_batch.blockSignals(False)
 
     def print_front(self):
         batch = self.batches[self.batch_index]
         total = len(batch)
         try:
             front_result = print_pdf_subset(self.current_pdf_path, list(range(1, total + 1)))
-            save_pending_print_job(
-                pdf_path=self.current_pdf_path,
-                total_cards=total,
-                owner_id=self.owner_id,
-                sheep_ids=[row["sheep"].id for row in batch],
-            )
-            self.front_printed = True
+            self.batch_states[self.batch_index]["front_printed"] = True
             self._refresh_state()
             QMessageBox.information(
                 self,
                 "Печать",
-                f"Лицевые страницы отправлены на печать.\n{front_result}\n\nТеперь переверните листы.",
+                f"Лицевые страницы отправлены на печать.\n{front_result}",
             )
         except Exception as exc:
             QMessageBox.warning(self, "Печать", str(exc))
 
     def print_back(self):
-        job = get_pending_print_job()
-        if not job:
-            QMessageBox.warning(self, "Печать", "Нет сохранённой пачки для печати оборота.")
-            return
         batch = self.batches[self.batch_index]
         total = len(batch)
         try:
@@ -195,15 +208,26 @@ class PrintBatchDialog(QDialog):
                     list(range(total + 1, total * 2 + 1)),
                 )
             _mark_batch_printed(self.db, batch)
-            clear_pending_print_job()
-            self.back_printed = True
+            self.batch_states[self.batch_index]["back_printed"] = True
             self._refresh_state()
             QMessageBox.information(self, "Печать", f"Оборотные страницы отправлены на печать.\n{back_result}")
         except Exception as exc:
             QMessageBox.warning(self, "Печать", str(exc))
 
     def next_batch(self):
-        self.batch_index += 1
+        self._set_batch_index(self.batch_index + 1)
+
+    def _on_batch_changed(self, index):
+        if index < 0:
+            return
+        self._set_batch_index(index)
+
+    def _set_batch_index(self, new_index: int):
+        if new_index < 0 or new_index >= len(self.batches):
+            return
+        if self.batch_index == new_index:
+            return
+        self.batch_index = new_index
         self._prepare_current_batch()
 
 
