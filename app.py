@@ -12,7 +12,8 @@ from services.guest_records_service import claim_guest_records
 
 def main():
     app = QApplication(sys.argv)
-    icon_path = resource_path("assets", "app_icon.svg")
+    icon_file = "app_icon.ico" if sys.platform.startswith("win") else "app_icon.svg"
+    icon_path = resource_path("assets", icon_file)
     if icon_path:
         app.setWindowIcon(QIcon(icon_path))
     token_refresh_url = build_api_url("/api/token/refresh/")

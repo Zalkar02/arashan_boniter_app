@@ -1,7 +1,9 @@
 # settings.py — настройки и смена пользователя
+import os
+
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QMessageBox, QProgressDialog, QComboBox, QApplication
+    QMessageBox, QProgressDialog, QComboBox, QApplication, QFileDialog
 )
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QPalette, QColor, QKeySequence
@@ -11,9 +13,11 @@ from services.auth_service import clear_session
 from services.passport_print_service import (
     get_back_print_order,
     get_print_batch_size,
+    get_saved_pdf_app_path,
     get_saved_printer,
     list_system_printers,
     save_back_print_order,
+    save_pdf_app_path,
     save_print_batch_size,
     save_selected_printer,
 )
@@ -67,6 +71,21 @@ class SettingsWindow(QMainWindow):
         self.lbl_printer_hint = QLabel("")
         v.addWidget(self.lbl_printer_hint)
 
+        pdf_app_row = QHBoxLayout()
+        self.lbl_pdf_app = QLabel("PDF-приложение:")
+        self.lbl_pdf_app_value = QLabel("По умолчанию системы")
+        self.lbl_pdf_app_value.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.btn_choose_pdf_app = QPushButton("Выбрать")
+        self.btn_clear_pdf_app = QPushButton("Сбросить")
+        pdf_app_row.addWidget(self.lbl_pdf_app)
+        pdf_app_row.addWidget(self.lbl_pdf_app_value, 1)
+        pdf_app_row.addWidget(self.btn_choose_pdf_app)
+        pdf_app_row.addWidget(self.btn_clear_pdf_app)
+        v.addLayout(pdf_app_row)
+
+        self.lbl_pdf_app_hint = QLabel("")
+        v.addWidget(self.lbl_pdf_app_hint)
+
         batch_row = QHBoxLayout()
         self.lbl_batch = QLabel("Печать за раз:")
         self.cmb_print_batch = QComboBox()
@@ -113,6 +132,8 @@ class SettingsWindow(QMainWindow):
         self.btn_logout.clicked.connect(self._logout)
         self.btn_back.clicked.connect(self.go_back)
         self.btn_refresh_printers.clicked.connect(self._load_printers)
+        self.btn_choose_pdf_app.clicked.connect(self._choose_pdf_app)
+        self.btn_clear_pdf_app.clicked.connect(self._clear_pdf_app)
         self.cmb_printer.currentIndexChanged.connect(self._save_printer_selection)
         self.cmb_print_batch.currentIndexChanged.connect(self._save_print_batch_size)
         self.cmb_back_order.currentIndexChanged.connect(self._save_back_print_order)
@@ -120,6 +141,7 @@ class SettingsWindow(QMainWindow):
         self.btn_pull_updates.clicked.connect(self._pull_updates)
 
         self._load_printers()
+        self._load_pdf_app_path()
         self._load_print_batch_size()
         self._load_back_print_order()
 
@@ -151,6 +173,38 @@ class SettingsWindow(QMainWindow):
 
     def _save_printer_selection(self):
         save_selected_printer(self.cmb_printer.currentData() or "")
+
+    def _load_pdf_app_path(self):
+        saved_path = get_saved_pdf_app_path()
+        if saved_path:
+            self.lbl_pdf_app_value.setText(saved_path)
+            if os.path.exists(saved_path):
+                self.lbl_pdf_app_hint.setText("В Windows подготовленный PDF будет открываться в этом приложении.")
+            else:
+                self.lbl_pdf_app_hint.setText("Сохранённый путь не найден. Приложение попробует использовать системное или найденное автоматически.")
+            self.btn_clear_pdf_app.setEnabled(True)
+            return
+        self.lbl_pdf_app_value.setText("По умолчанию системы")
+        self.lbl_pdf_app_hint.setText("Если указать приложение явно, подготовленный PDF будет открываться в нём.")
+        self.btn_clear_pdf_app.setEnabled(False)
+
+    def _choose_pdf_app(self):
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Выберите PDF-приложение",
+            "",
+            "Приложения (*.exe);;Все файлы (*.*)",
+        )
+        if not file_path:
+            return
+        save_pdf_app_path(file_path)
+        self._load_pdf_app_path()
+        self.statusBar().showMessage("PDF-приложение сохранено.", 5000)
+
+    def _clear_pdf_app(self):
+        save_pdf_app_path("")
+        self._load_pdf_app_path()
+        self.statusBar().showMessage("Пользовательский путь к PDF-приложению сброшен.", 5000)
 
     def _load_print_batch_size(self):
         saved_batch = get_print_batch_size()

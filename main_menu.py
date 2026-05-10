@@ -16,7 +16,7 @@ from services.user_context_service import get_current_user_name
 from settings import SettingsWindow
 
 THEME_PATH = resource_path("styles", "light_theme.qss")
-ICON_PATH = resource_path("assets", "app_icon.svg")
+ICON_PATH = resource_path("assets", "app_icon.ico" if sys.platform.startswith("win") else "app_icon.svg")
 
 class MainMenu(QMainWindow):
     def __init__(self):

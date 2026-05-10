@@ -8,6 +8,7 @@ hiddenimports = collect_submodules("reportlab")
 datas = [
     ("styles/light_theme.qss", "styles"),
     ("assets/app_icon.svg", "assets"),
+    ("assets/app_icon.ico", "assets"),
     ("assets/passport_template/ewe_page1.png", "assets/passport_template"),
     ("assets/passport_template/ewe_page2.png", "assets/passport_template"),
     ("assets/passport_template/ram_page1.png", "assets/passport_template"),
@@ -40,7 +41,7 @@ exe = EXE(
     strip=False,
     upx=True,
     console=False,
-    icon="assets/app_icon.svg",
+    icon="assets/app_icon.ico",
 )
 
 coll = COLLECT(

@@ -28,8 +28,7 @@ from services.passport_print_service import (
     get_back_print_order,
     get_pending_print_job,
     get_print_batch_size,
-    print_pdf_pages,
-    print_pdf_page_range,
+    print_pdf_subset,
     save_pending_print_job,
     generate_passports_pdf,
 )
@@ -160,7 +159,7 @@ class PrintBatchDialog(QDialog):
         batch = self.batches[self.batch_index]
         total = len(batch)
         try:
-            front_result = print_pdf_page_range(self.current_pdf_path, 1, total)
+            front_result = print_pdf_subset(self.current_pdf_path, list(range(1, total + 1)))
             save_pending_print_job(
                 pdf_path=self.current_pdf_path,
                 total_cards=total,
@@ -186,12 +185,15 @@ class PrintBatchDialog(QDialog):
         total = len(batch)
         try:
             if get_back_print_order() == "reverse":
-                back_result = print_pdf_pages(
+                back_result = print_pdf_subset(
                     self.current_pdf_path,
                     list(range(total * 2, total, -1)),
                 )
             else:
-                back_result = print_pdf_page_range(self.current_pdf_path, total + 1, total * 2)
+                back_result = print_pdf_subset(
+                    self.current_pdf_path,
+                    list(range(total + 1, total * 2 + 1)),
+                )
             _mark_batch_printed(self.db, batch)
             clear_pending_print_job()
             self.back_printed = True

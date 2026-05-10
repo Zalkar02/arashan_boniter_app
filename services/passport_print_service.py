@@ -26,10 +26,12 @@ fitz = import_pymupdf()
 PAGE_WIDTH, PAGE_HEIGHT = landscape(A4)
 TEMPLATE_DIR = resource_path("assets", "passport_template")
 EXPORTS_DIR = os.path.join(STATE_DIR, "exports")
+PRINT_TEMP_DIR = os.path.join(STATE_DIR, "print_jobs")
 PRINT_SETTINGS_PATH = os.path.join(STATE_DIR, "print_settings.json")
 PRINT_JOB_STATE_PATH = os.path.join(STATE_DIR, "pending_print_job.json")
 DEFAULT_PRINT_BATCH_SIZE = 20
 DEFAULT_BACK_PRINT_ORDER = "reverse"
+PRINT_TEMP_TTL_SECONDS = 24 * 60 * 60
 FONT_NAME = "DejaVuSans"
 FONT_CANDIDATES = [
     resource_path("assets", "DejaVuSans.ttf"),
@@ -846,6 +848,17 @@ def get_saved_printer():
     return str(data.get("printer_name") or "")
 
 
+def get_saved_pdf_app_path():
+    if not os.path.exists(PRINT_SETTINGS_PATH):
+        return ""
+    try:
+        with open(PRINT_SETTINGS_PATH, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except Exception:
+        return ""
+    return str(data.get("pdf_app_path") or "").strip()
+
+
 def save_selected_printer(printer_name: str):
     ensure_state_dir()
     current = {}
@@ -857,6 +870,20 @@ def save_selected_printer(printer_name: str):
             current = {}
     with open(PRINT_SETTINGS_PATH, "w", encoding="utf-8") as fh:
         current["printer_name"] = printer_name or ""
+        json.dump(current, fh, ensure_ascii=False, indent=2)
+
+
+def save_pdf_app_path(app_path: str):
+    ensure_state_dir()
+    current = {}
+    if os.path.exists(PRINT_SETTINGS_PATH):
+        try:
+            with open(PRINT_SETTINGS_PATH, "r", encoding="utf-8") as fh:
+                current = json.load(fh)
+        except Exception:
+            current = {}
+    current["pdf_app_path"] = (app_path or "").strip()
+    with open(PRINT_SETTINGS_PATH, "w", encoding="utf-8") as fh:
         json.dump(current, fh, ensure_ascii=False, indent=2)
 
 
@@ -944,6 +971,148 @@ def clear_pending_print_job():
         os.remove(PRINT_JOB_STATE_PATH)
 
 
+def _cleanup_stale_print_temp_files():
+    if not os.path.isdir(PRINT_TEMP_DIR):
+        return
+    now_ts = datetime.datetime.now().timestamp()
+    for name in os.listdir(PRINT_TEMP_DIR):
+        path = os.path.join(PRINT_TEMP_DIR, name)
+        try:
+            if not os.path.isfile(path):
+                continue
+            age_seconds = now_ts - os.path.getmtime(path)
+            if age_seconds >= PRINT_TEMP_TTL_SECONDS:
+                os.remove(path)
+        except OSError:
+            continue
+
+
+def _find_windows_pdf_printer_tool():
+    candidates = []
+    saved_path = get_saved_pdf_app_path()
+    if saved_path and os.path.exists(saved_path):
+        candidates.append(saved_path)
+
+    for exe_name in ("SumatraPDF.exe", "AcroRd32.exe", "Acrobat.exe"):
+        path = shutil.which(exe_name)
+        if path:
+            candidates.append(path)
+
+    local_appdata = os.getenv("LOCALAPPDATA", "")
+    program_files = os.getenv("ProgramFiles", "")
+    program_files_x86 = os.getenv("ProgramFiles(x86)", "")
+    common_paths = [
+        os.path.join(local_appdata, "SumatraPDF", "SumatraPDF.exe"),
+        os.path.join(program_files, "SumatraPDF", "SumatraPDF.exe"),
+        os.path.join(program_files_x86, "SumatraPDF", "SumatraPDF.exe"),
+        os.path.join(program_files, "Adobe", "Acrobat DC", "Acrobat", "Acrobat.exe"),
+        os.path.join(program_files_x86, "Adobe", "Acrobat Reader DC", "Reader", "AcroRd32.exe"),
+        os.path.join(program_files, "Adobe", "Acrobat Reader DC", "Reader", "AcroRd32.exe"),
+    ]
+    for path in common_paths:
+        if path and os.path.exists(path):
+            candidates.append(path)
+
+    seen = set()
+    unique_candidates = []
+    for path in candidates:
+        normalized = os.path.normcase(os.path.abspath(path))
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        unique_candidates.append(path)
+    return unique_candidates
+
+
+def _print_pdf_windows_with_tool(pdf_path: str, printer_name: str | None = None):
+    last_error = None
+    for tool_path in _find_windows_pdf_printer_tool():
+        lower_name = os.path.basename(tool_path).lower()
+        try:
+            if lower_name == "sumatrapdf.exe":
+                cmd = [tool_path, "-silent"]
+                if printer_name:
+                    cmd.extend(["-print-to", printer_name])
+                else:
+                    cmd.append("-print-to-default")
+                cmd.append(pdf_path)
+            elif lower_name in {"acrord32.exe", "acrobat.exe"}:
+                if not printer_name:
+                    continue
+                cmd = [tool_path, "/N", "/T", pdf_path, printer_name]
+            else:
+                continue
+
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=60, check=False)
+            if result.returncode == 0:
+                tool_label = os.path.basename(tool_path)
+                if printer_name:
+                    return f"Документ отправлен на печать в принтер: {printer_name} ({tool_label})."
+                return f"Документ отправлен на печать в принтер по умолчанию ({tool_label})."
+            last_error = (result.stderr or result.stdout or "").strip() or f"code {result.returncode}"
+        except Exception as exc:
+            last_error = str(exc)
+
+    if last_error:
+        raise RuntimeError(f"Не удалось отправить PDF на печать через доступные приложения Windows: {last_error}")
+    raise RuntimeError(
+        "В Windows не найдено приложение для прямой печати PDF. "
+        "Установите SumatraPDF или Adobe Reader, либо назначьте приложению для PDF действие печати."
+    )
+
+
+def _print_pdf_windows(pdf_path: str, printer_name: str | None = None):
+    saved_path = get_saved_pdf_app_path()
+    if saved_path and os.path.exists(saved_path):
+        try:
+            subprocess.Popen([saved_path, pdf_path])
+            return f"PDF открыт в приложении: {os.path.basename(saved_path)}"
+        except Exception as exc:
+            raise RuntimeError(f"Не удалось открыть PDF через выбранное приложение: {exc}") from exc
+
+    try:
+        if printer_name:
+            os.startfile(pdf_path, "printto", f'"{printer_name}"')
+        else:
+            os.startfile(pdf_path, "print")
+        if printer_name:
+            return f"Документ отправлен на печать в принтер: {printer_name}"
+        return "Документ отправлен на печать в принтер по умолчанию."
+    except AttributeError:
+        return _print_pdf_windows_with_tool(pdf_path, printer_name)
+    except OSError as exc:
+        if getattr(exc, "winerror", None) == 1155:
+            return _print_pdf_windows_with_tool(pdf_path, printer_name)
+        raise RuntimeError(f"Не удалось отправить файл на печать: {exc}") from exc
+
+
+def _write_pdf_subset(pdf_path: str, pages: list[int]):
+    if not pages:
+        raise RuntimeError("Не выбраны страницы для печати.")
+    if min(pages) <= 0:
+        raise RuntimeError("Некорректные номера страниц для печати.")
+
+    reader = PdfReader(pdf_path)
+    total_pages = len(reader.pages)
+    invalid = [page for page in pages if page > total_pages]
+    if invalid:
+        raise RuntimeError("Запрошены страницы, которых нет в PDF.")
+
+    writer = PdfWriter()
+    for page_number in pages:
+        writer.add_page(reader.pages[page_number - 1])
+
+    ensure_state_dir()
+    os.makedirs(PRINT_TEMP_DIR, exist_ok=True)
+    _cleanup_stale_print_temp_files()
+    with tempfile.NamedTemporaryFile(prefix="print_pages_", suffix=".pdf", dir=PRINT_TEMP_DIR, delete=False) as tmp:
+        temp_pdf_path = tmp.name
+
+    with open(temp_pdf_path, "wb") as fh:
+        writer.write(fh)
+    return temp_pdf_path
+
+
 def print_pdf_page_range(pdf_path: str, start_page: int, end_page: int, printer_name: str | None = None):
     if start_page <= 0 or end_page < start_page:
         raise RuntimeError("Некорректный диапазон страниц для печати.")
@@ -1023,3 +1192,18 @@ def print_pdf_pages(pdf_path: str, pages: list[int], printer_name: str | None = 
             os.remove(temp_pdf_path)
         except OSError:
             pass
+
+
+def print_pdf_subset(pdf_path: str, pages: list[int], printer_name: str | None = None):
+    temp_pdf_path = _write_pdf_subset(pdf_path, pages)
+    try:
+        selected_printer = printer_name if printer_name is not None else get_saved_printer()
+        if os.name == "nt":
+            return _print_pdf_windows(temp_pdf_path, selected_printer or None)
+        return print_pdf_page_range(temp_pdf_path, 1, len(pages), printer_name=printer_name)
+    finally:
+        if os.name != "nt":
+            try:
+                os.remove(temp_pdf_path)
+            except OSError:
+                pass
