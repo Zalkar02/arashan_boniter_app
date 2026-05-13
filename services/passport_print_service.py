@@ -1086,6 +1086,37 @@ def _print_pdf_windows(pdf_path: str, printer_name: str | None = None):
         raise RuntimeError(f"Не удалось отправить файл на печать: {exc}") from exc
 
 
+def _print_pdf_linux(pdf_path: str, printer_name: str | None = None):
+    lp_path = shutil.which("lp")
+    if lp_path is None:
+        raise RuntimeError("Не найдена команда lp для отправки на печать.")
+
+    cmd = [lp_path, "-o", "media=A4"]
+    if printer_name:
+        cmd.extend(["-d", printer_name])
+    cmd.append(pdf_path)
+
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        message = (result.stderr or result.stdout or "Не удалось отправить на печать.").strip()
+        scheduler_probe = subprocess.run(
+            ["lpstat", "-p", "-d"],
+            capture_output=True,
+            text=True,
+        )
+        scheduler_status = (scheduler_probe.stderr or scheduler_probe.stdout or "").strip()
+        if "Scheduler is not running" in scheduler_status:
+            raise RuntimeError(
+                "Система печати CUPS не запущена. Запусти службу печати и проверь, что принтер добавлен."
+            )
+        if "no system default destination" in scheduler_status and not printer_name:
+            raise RuntimeError(
+                "Не задан принтер по умолчанию. Добавь принтер в системе или выбери его явно."
+            )
+        raise RuntimeError(message)
+    return (result.stdout or "Документ отправлен на печать.").strip()
+
+
 def _write_pdf_subset(pdf_path: str, pages: list[int]):
     if not pages:
         raise RuntimeError("Не выбраны страницы для печати.")
@@ -1116,82 +1147,12 @@ def _write_pdf_subset(pdf_path: str, pages: list[int]):
 def print_pdf_page_range(pdf_path: str, start_page: int, end_page: int, printer_name: str | None = None):
     if start_page <= 0 or end_page < start_page:
         raise RuntimeError("Некорректный диапазон страниц для печати.")
-
-    selected_printer = printer_name if printer_name is not None else get_saved_printer()
-
-    if os.name == "nt":
-        try:
-            if selected_printer:
-                os.startfile(pdf_path, "printto", f'"{selected_printer}"')
-            else:
-                os.startfile(pdf_path, "print")
-        except AttributeError:
-            raise RuntimeError("Печать через os.startfile недоступна в этой сборке Python.")
-        except OSError as exc:
-            raise RuntimeError(f"Не удалось отправить файл на печать: {exc}") from exc
-        if selected_printer:
-            return f"Документ отправлен на печать в принтер: {selected_printer}"
-        return "Документ отправлен на печать в принтер по умолчанию."
-
-    lp_path = shutil.which("lp")
-    if lp_path is None:
-        raise RuntimeError("Не найдена команда lp для отправки на печать.")
-
-    cmd = [lp_path, "-o", "media=A4", "-P", f"{start_page}-{end_page}"]
-    if selected_printer:
-        cmd.extend(["-d", selected_printer])
-    cmd.append(pdf_path)
-
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        message = (result.stderr or result.stdout or "Не удалось отправить на печать.").strip()
-        scheduler_probe = subprocess.run(
-            ["lpstat", "-p", "-d"],
-            capture_output=True,
-            text=True,
-        )
-        scheduler_status = (scheduler_probe.stderr or scheduler_probe.stdout or "").strip()
-        if "Scheduler is not running" in scheduler_status:
-            raise RuntimeError(
-                "Система печати CUPS не запущена. Запусти службу печати и проверь, что принтер добавлен."
-            )
-        if "no system default destination" in scheduler_status and not selected_printer:
-            raise RuntimeError(
-                "Не задан принтер по умолчанию. Добавь принтер в системе или выбери его явно."
-            )
-        raise RuntimeError(message)
-    return (result.stdout or "Документ отправлен на печать.").strip()
+    pages = list(range(start_page, end_page + 1))
+    return print_pdf_subset(pdf_path, pages, printer_name=printer_name)
 
 
 def print_pdf_pages(pdf_path: str, pages: list[int], printer_name: str | None = None):
-    if not pages:
-        raise RuntimeError("Не выбраны страницы для печати.")
-    if min(pages) <= 0:
-        raise RuntimeError("Некорректные номера страниц для печати.")
-
-    reader = PdfReader(pdf_path)
-    total_pages = len(reader.pages)
-    invalid = [page for page in pages if page > total_pages]
-    if invalid:
-        raise RuntimeError("Запрошены страницы, которых нет в PDF.")
-
-    writer = PdfWriter()
-    for page_number in pages:
-        writer.add_page(reader.pages[page_number - 1])
-
-    ensure_state_dir()
-    with tempfile.NamedTemporaryFile(prefix="print_pages_", suffix=".pdf", dir=STATE_DIR, delete=False) as tmp:
-        temp_pdf_path = tmp.name
-
-    try:
-        with open(temp_pdf_path, "wb") as fh:
-            writer.write(fh)
-        return print_pdf_page_range(temp_pdf_path, 1, len(pages), printer_name=printer_name)
-    finally:
-        try:
-            os.remove(temp_pdf_path)
-        except OSError:
-            pass
+    return print_pdf_subset(pdf_path, pages, printer_name=printer_name)
 
 
 def print_pdf_subset(pdf_path: str, pages: list[int], printer_name: str | None = None):
@@ -1200,7 +1161,7 @@ def print_pdf_subset(pdf_path: str, pages: list[int], printer_name: str | None =
         selected_printer = printer_name if printer_name is not None else get_saved_printer()
         if os.name == "nt":
             return _print_pdf_windows(temp_pdf_path, selected_printer or None)
-        return print_pdf_page_range(temp_pdf_path, 1, len(pages), printer_name=printer_name)
+        return _print_pdf_linux(temp_pdf_path, selected_printer or None)
     finally:
         if os.name != "nt":
             try:
