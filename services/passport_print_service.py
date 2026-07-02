@@ -704,7 +704,7 @@ def _draw_second_page(pdf: canvas.Canvas, session, row: dict, owner):
     layout = _get_back_genealogy_layout(back_template_pdf)
     id_boxes = layout.get("id", [])
     nick_boxes = layout.get("nick", {})
-    ancestors = [father, father_father, father_mother, mother, mother_father, mother_mother]
+    ancestors = [father, father_father, mother_father, mother, father_mother, mother_mother]
     for idx, ancestor in enumerate(ancestors):
         if ancestor is None or idx >= len(id_boxes):
             continue
@@ -741,14 +741,14 @@ def _build_back_pdf_page(row: dict):
         "{f_f_nick}": str(getattr(father_father, "nick", "") or "") if father_father else "",
         "{f_f_name}": str(getattr(father_father, "nick", "") or "") if father_father else "",
         "{f_f_breed}": BREED_NAME if father_father else "",
-        "{m_f_id}": _short_id(getattr(father_mother, "id_n", "")) if father_mother else "",
-        "{m_f_nick}": str(getattr(father_mother, "nick", "") or "") if father_mother else "",
-        "{m_f_name}": str(getattr(father_mother, "nick", "") or "") if father_mother else "",
-        "{m_f_breed}": BREED_NAME if father_mother else "",
-        "{f_m_id}": _short_id(getattr(mother_father, "id_n", "")) if mother_father else "",
-        "{f_m_nick}": str(getattr(mother_father, "nick", "") or "") if mother_father else "",
-        "{f_m_name}": str(getattr(mother_father, "nick", "") or "") if mother_father else "",
-        "{f_m_breed}": BREED_NAME if mother_father else "",
+        "{f_m_id}": _short_id(getattr(father_mother, "id_n", "")) if father_mother else "",
+        "{f_m_nick}": str(getattr(father_mother, "nick", "") or "") if father_mother else "",
+        "{f_m_name}": str(getattr(father_mother, "nick", "") or "") if father_mother else "",
+        "{f_m_breed}": BREED_NAME if father_mother else "",
+        "{m_f_id}": _short_id(getattr(mother_father, "id_n", "")) if mother_father else "",
+        "{m_f_nick}": str(getattr(mother_father, "nick", "") or "") if mother_father else "",
+        "{m_f_name}": str(getattr(mother_father, "nick", "") or "") if mother_father else "",
+        "{m_f_breed}": BREED_NAME if mother_father else "",
         "{m_m_id}": _short_id(getattr(mother_mother, "id_n", "")) if mother_mother else "",
         "{m_m_nick}": str(getattr(mother_mother, "nick", "") or "") if mother_mother else "",
         "{m_m_name}": str(getattr(mother_mother, "nick", "") or "") if mother_mother else "",

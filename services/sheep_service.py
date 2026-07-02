@@ -4,6 +4,43 @@ from db.models import Application, Lamb, Owner, Sheep
 from services.owner_search_service import _norm
 
 
+def _prepare_deleted_sheep_for_reuse(session, sheep, owner_id, date_filling):
+    sheep.is_deleted = False
+    sheep.synced = False
+    sheep.updated_at = datetime.datetime.utcnow()
+    sheep.is_paid = False
+    sheep.is_printed = False
+    sheep.payment_reference = None
+    sheep.payment_token = None
+    sheep.owner_id = owner_id
+    sheep.parents = []
+
+    old_applications = session.query(Application).filter_by(sheep_id=sheep.id).all()
+    for application in old_applications:
+        application.is_deleted = True
+        application.synced = False
+        application.updated_at = datetime.datetime.utcnow()
+        application.is_paid = False
+        application.is_printed = False
+        application.payment_reference = None
+        application.payment_token = None
+
+    old_owner_links = session.query(Owner).filter_by(sheep_id=sheep.id).all()
+    for link in old_owner_links:
+        link.is_deleted = True
+        link.owner_bool = False
+        link.synced = False
+        link.updated_at = datetime.datetime.utcnow()
+        if not getattr(link, "date2", None):
+            link.date2 = date_filling or datetime.date.today()
+
+    lamb = session.query(Lamb).filter_by(sheep_id=sheep.id).first()
+    if lamb is not None:
+        lamb.is_deleted = True
+        lamb.synced = False
+        lamb.updated_at = datetime.datetime.utcnow()
+
+
 def save_sheep_bundle(session, payload: dict):
     owner_id = int(payload["owner_id"])
     existing_sheep_id = payload.get("existing_sheep_id")
@@ -12,9 +49,16 @@ def save_sheep_bundle(session, payload: dict):
     date_filling = payload["date_filling"]
 
     sheep = None
+    reused_deleted_sheep = False
     if existing_sheep_id is not None:
         sheep = session.query(Sheep).filter_by(id=existing_sheep_id).first()
-    previous_owner_id = getattr(sheep, "owner_id", None) if sheep is not None else None
+    elif idn:
+        deleted_sheep = session.query(Sheep).filter_by(id_n=idn, is_deleted=True).first()
+        if deleted_sheep is not None:
+            sheep = deleted_sheep
+            _prepare_deleted_sheep_for_reuse(session, sheep, owner_id, date_filling)
+            reused_deleted_sheep = True
+    previous_owner_id = None if reused_deleted_sheep else (getattr(sheep, "owner_id", None) if sheep is not None else None)
 
     sheep_fields = {
         "created_by_user_id": payload.get("created_by_user_id"),
@@ -33,6 +77,7 @@ def save_sheep_bundle(session, payload: dict):
         "out": payload.get("out", False),
         "hide": payload.get("hide", False),
         "created_by_guest": payload.get("created_by_guest", False),
+        "date_filling": date_filling,
     }
 
     created = sheep is None
@@ -46,7 +91,7 @@ def save_sheep_bundle(session, payload: dict):
         sheep.updated_at = datetime.datetime.utcnow()
         sheep.synced = False
 
-    if created:
+    if created or reused_deleted_sheep:
         owner_link = Owner(
             sheep_id=sheep.id,
             owner_id=owner_id,

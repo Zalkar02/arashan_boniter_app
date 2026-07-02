@@ -1,5 +1,5 @@
 import datetime
-from sqlalchemy import case, func, or_
+from sqlalchemy import or_
 from services.owner_search_service import _norm
 
 
@@ -79,19 +79,18 @@ def get_owner_history_rows(session, application_model, sheep_model, owner_model,
     sheep_rows = sheep_query.order_by(sheep_model.date_filling.desc().nullslast(), sheep_model.id.desc()).all()
     sheep_ids = [sheep.id for sheep in sheep_rows]
     current_owner_map = _load_current_owner_map(session, owner_model, sheep_ids=sheep_ids)
-    application_stats = (
-        session.query(
-            application_model.sheep_id.label("sheep_id"),
-            func.count(application_model.id).label("applications_count"),
-            func.max(application_model.date).label("latest_date"),
-            func.max(case((application_model.is_paid.is_(False), 1), else_=0)).label("has_unpaid"),
-        )
-        .filter_by(is_deleted=False)
-        .filter(application_model.sheep_id.isnot(None))
-        .group_by(application_model.sheep_id)
-        .all()
+    applications = _load_rows_by_ids(
+        session,
+        application_model,
+        application_model.sheep_id,
+        sheep_ids,
+        application_model.is_deleted.is_(False),
     )
-    app_stats_by_sheep_id = {row.sheep_id: row for row in application_stats}
+    app_by_sheep_id = {}
+    for application in applications:
+        if application.sheep_id is None:
+            continue
+        app_by_sheep_id.setdefault(application.sheep_id, []).append(application)
 
     owners = {}
     for sheep in sheep_rows:
@@ -103,7 +102,8 @@ def get_owner_history_rows(session, application_model, sheep_model, owner_model,
         if owner_id is None or bool(getattr(owner, "is_deleted", False)):
             continue
 
-        app_stats = app_stats_by_sheep_id.get(sheep.id)
+        owner_apps = app_by_sheep_id.get(sheep.id, [])
+        latest_application = _get_latest_application(owner_apps)
         bucket = owners.setdefault(
             owner_id,
             {
@@ -118,31 +118,21 @@ def get_owner_history_rows(session, application_model, sheep_model, owner_model,
         )
 
         bucket["total_sheep"] += 1
-        if app_stats and app_stats.applications_count:
+        if owner_apps:
             bucket["sheep_with_applications"] += 1
         else:
             bucket["sheep_without_applications"] += 1
 
-        app_recent_date = getattr(app_stats, "latest_date", None) if app_stats else None
-        sheep_recent_date = getattr(sheep, "date_filling", None)
-        effective_recent_date = sheep_recent_date
-        if app_recent_date and (effective_recent_date is None or app_recent_date > effective_recent_date):
-            effective_recent_date = app_recent_date
+        effective_recent_date = _get_row_activity_date(sheep, latest_application)
         if effective_recent_date and effective_recent_date >= recent_since:
             bucket["recent_sheep"] += 1
 
-        if app_stats and app_stats.has_unpaid:
+        if latest_application is not None and not bool(getattr(latest_application, "is_paid", False)):
             bucket["unpaid_sheep"] += 1
 
         latest_activity = bucket["latest_activity"]
-        sheep_activity = sheep.date_filling
-        if sheep_activity and (latest_activity is None or sheep_activity > latest_activity):
-            bucket["latest_activity"] = sheep_activity
-
-        app_activity = getattr(app_stats, "latest_date", None)
-        latest_activity = bucket["latest_activity"]
-        if app_activity and (latest_activity is None or app_activity > latest_activity):
-            bucket["latest_activity"] = app_activity
+        if effective_recent_date and (latest_activity is None or effective_recent_date > latest_activity):
+            bucket["latest_activity"] = effective_recent_date
 
     filtered = []
     for bucket in owners.values():
@@ -256,12 +246,16 @@ def get_owner_detail_rows(session, user_model, sheep_model, application_model, o
         fully_paid = sheep_paid and (latest_application is None or latest_paid)
         has_unpaid_application = latest_application is not None and not latest_paid
         record_type = _get_record_type(sheep, latest_application)
+        activity_date = _get_row_activity_date(sheep, latest_application)
+        display_date = _get_row_display_date(sheep, latest_application)
 
         rows.append(
             {
                 "sheep": sheep,
                 "applications": owner_apps,
                 "latest_application": latest_application,
+                "activity_date": activity_date,
+                "display_date": display_date,
                 "has_applications": has_applications,
                 "record_type": record_type,
                 "sync_status": "Синхронизировано" if row_synced else "Не синхронизировано",
@@ -304,7 +298,7 @@ def format_owner_sheep_row(row: dict):
         str(getattr(sheep, "nick", "") or ""),
         gender,
         age,
-        sheep.date_filling.strftime("%d.%m.%Y") if getattr(sheep, "date_filling", None) else "",
+        row["display_date"].strftime("%d.%m.%Y") if row.get("display_date") else "",
         "Да" if row["has_applications"] else "Нет",
         row["sync_status"],
         row["payment_status"],
@@ -334,6 +328,20 @@ def _get_record_type(sheep, latest_application):
     if latest_application is not None:
         return "Бонитр."
     return "Овца"
+
+
+def _get_row_display_date(sheep, latest_application):
+    if latest_application is not None:
+        return getattr(latest_application, "date", None) or getattr(sheep, "date_filling", None)
+    return getattr(sheep, "date_filling", None)
+
+
+def _get_row_activity_date(sheep, latest_application):
+    sheep_date = getattr(sheep, "date_filling", None)
+    app_date = getattr(latest_application, "date", None) if latest_application is not None else None
+    if app_date and (sheep_date is None or app_date > sheep_date):
+        return app_date
+    return sheep_date
 
 
 def _get_payment_status(sheep_paid: bool, has_unpaid_application: bool):

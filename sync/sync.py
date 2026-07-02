@@ -244,24 +244,36 @@ def _is_object_ready_for_sync(session: Session, model, obj) -> bool:
 
 
 def _get_owner_scope_objects(session: Session, owner_id: int):
-    sheep_rows = session.query(Sheep).filter_by(owner_id=owner_id).all()
-    owner_links = session.query(Owner).filter_by(owner_id=owner_id).all()
-    linked_sheep_ids = {row.sheep_id for row in owner_links if getattr(row, "sheep_id", None)}
+    sheep_rows = session.query(Sheep).filter(
+        Sheep.owner_id == owner_id,
+        (Sheep.is_deleted.is_(False)) | (Sheep.synced.is_(False)),
+    ).all()
+    direct_owner_links = session.query(Owner).filter_by(owner_id=owner_id).all()
+    linked_sheep_ids = {row.sheep_id for row in direct_owner_links if getattr(row, "sheep_id", None)}
     if linked_sheep_ids:
-        linked_sheep = session.query(Sheep).filter(Sheep.id.in_(linked_sheep_ids)).all()
+        linked_sheep = session.query(Sheep).filter(
+            Sheep.id.in_(linked_sheep_ids),
+            (Sheep.is_deleted.is_(False)) | (Sheep.synced.is_(False)),
+        ).all()
         sheep_rows.extend(linked_sheep)
     sheep_rows = _unique_by_id(sheep_rows)
 
     sheep_ids = [row.id for row in sheep_rows]
+    owner_links = session.query(Owner).filter(Owner.sheep_id.in_(sheep_ids)).all() if sheep_ids else []
     applications = session.query(Application).filter(Application.sheep_id.in_(sheep_ids)).all() if sheep_ids else []
     lambs = session.query(Lamb).filter(Lamb.sheep_id.in_(sheep_ids)).all() if sheep_ids else []
     color_ids = {row.color_id for row in sheep_rows if getattr(row, "color_id", None)}
     colors = session.query(Color).filter(Color.id.in_(color_ids)).all() if color_ids else []
-    owner_user = session.query(User).filter_by(id=owner_id).first()
+    user_ids = {owner_id}
+    user_ids.update(
+        row.owner_id for row in owner_links
+        if getattr(row, "owner_id", None) is not None
+    )
+    owner_users = session.query(User).filter(User.id.in_(user_ids)).all() if user_ids else []
 
     scoped = {
         Color: colors,
-        User: [owner_user] if owner_user is not None else [],
+        User: owner_users,
         Sheep: sheep_rows,
         Lamb: lambs,
         Application: applications,
@@ -510,6 +522,8 @@ def sync_to_server(session: Session, progress_cb=None, should_stop=None):
                     total,
                     f"Ожидание родителей для {len(remaining)} овец",
                 )
+        if not ok:
+            break
     return ok
 
 
@@ -604,6 +618,8 @@ def sync_owner_to_server(session: Session, owner_id: int, progress_cb=None, shou
                     total,
                     f"Ожидание родителей для {len(remaining)} овец",
                 )
+        if not ok:
+            break
     return ok
 
 def sync_from_server(session: Session, progress_cb=None, should_stop=None):
@@ -702,6 +718,7 @@ def run_sync(progress_cb=None, should_stop=None):
     ok_down = sync_from_server(session, progress_cb=progress_cb, should_stop=should_stop)
     if ok_up and ok_down:
         update_last_sync_time()
+    return ok_up and ok_down
 
 
 def run_owner_sync(owner_id: int, progress_cb=None, should_stop=None):

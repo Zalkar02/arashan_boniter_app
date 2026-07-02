@@ -26,9 +26,12 @@ class SyncWorker(QThread):
     def run(self):
         try:
             if self.owner_id is None:
-                run_sync(progress_cb=self._emit_progress, should_stop=self._should_stop)
+                ok = run_sync(progress_cb=self._emit_progress, should_stop=self._should_stop)
             else:
-                run_owner_sync(self.owner_id, progress_cb=self._emit_progress, should_stop=self._should_stop)
+                ok = run_owner_sync(self.owner_id, progress_cb=self._emit_progress, should_stop=self._should_stop)
+            if not ok:
+                self.failed.emit("Синхронизация завершилась с ошибками. last_sync.txt не обновлен.")
+                return
         except SyncCancelled:
             self.cancelled.emit()
             return
