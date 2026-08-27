@@ -1,6 +1,4 @@
-import datetime
-
-from db.models import User
+from db.models import User, utcnow_naive
 from services.owner_search_service import _norm
 
 
@@ -36,7 +34,7 @@ def update_owner(session, owner, payload: dict):
     owner.area = payload.get("area")
     owner.city = payload.get("city")
     owner.home = payload.get("home")
-    owner.updated_at = datetime.datetime.utcnow()
+    owner.updated_at = utcnow_naive()
     owner.synced = False
     session.commit()
     return owner
@@ -48,6 +46,6 @@ def soft_delete_owner(session, owner, current_user_id):
     if getattr(owner, "created_by_user_id", None) != current_user_id:
         raise RuntimeError("Удалять можно только своих владельцев.")
     owner.is_deleted = True
-    owner.updated_at = datetime.datetime.utcnow()
+    owner.updated_at = utcnow_naive()
     owner.synced = False
     session.commit()

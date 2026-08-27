@@ -152,6 +152,36 @@ class SyncServiceTests(unittest.TestCase):
         self.assertEqual(sheep.boniter, boniter.id)
         self.assertEqual(application.boniter, boniter.id)
 
+    def test_blocked_dependency_error_identifies_record_and_relation(self):
+        sheep = Sheep(id_n="missing-boniter", boniter=99, synced=False)
+        self.session.add(sheep)
+        self.session.commit()
+
+        with patch.object(sync_module, "UPLOAD_MODELS", [Sheep]):
+            with self.assertRaises(RuntimeError) as raised:
+                sync_module.sync_to_server(self.session, client_id="client-id")
+
+        message = str(raised.exception)
+        self.assertIn(f"локальная запись #{sheep.id}", message)
+        self.assertIn("бонитёр 99", message)
+        self.assertIn("локальная запись отсутствует", message)
+
+    def test_owner_upload_uses_shared_sync_pipeline(self):
+        scoped = {Color: []}
+        with (
+            patch.object(sync_module, "_get_owner_scope_objects", return_value=scoped),
+            patch.object(sync_module, "_sync_models_to_server", return_value=True) as shared_sync,
+        ):
+            result = sync_module.sync_owner_to_server(
+                self.session,
+                owner_id=25,
+                client_id="client-id",
+            )
+
+        self.assertTrue(result)
+        self.assertIs(shared_sync.call_args.kwargs["candidates_by_model"], scoped)
+        self.assertEqual(shared_sync.call_args.kwargs["client_id"], "client-id")
+
     def test_download_does_not_overwrite_unsynced_local_record(self):
         color = Color(name="Локальное название", remote_id=10, synced=False)
         self.session.add(color)

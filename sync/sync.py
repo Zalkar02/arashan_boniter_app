@@ -67,6 +67,12 @@ FK_FIELD_MAP = {
         "owner_id": ("owner", User),
     },
 }
+DEPENDENCY_LABELS = {
+    Color: "окрас",
+    User: "владелец",
+    Sheep: "овца",
+    Boniter: "бонитёр",
+}
 
 
 def _utcnow():
@@ -282,6 +288,11 @@ def _prepare_outgoing_payload(session: Session, model, data: dict):
 
 
 def _is_object_ready_for_sync(session: Session, model, obj) -> bool:
+    return not _get_missing_dependencies(session, model, obj)
+
+
+def _get_missing_dependencies(session: Session, model, obj):
+    missing = []
     fk_map = FK_FIELD_MAP.get(model, {})
     for local_key, (_, related_model) in fk_map.items():
         local_fk_value = getattr(obj, local_key, None)
@@ -289,11 +300,24 @@ def _is_object_ready_for_sync(session: Session, model, obj) -> bool:
             continue
         related = session.query(related_model).filter_by(id=local_fk_value).first()
         if related is None:
-            return False
-        related_remote_id = getattr(related, "remote_id", None)
-        if not related_remote_id:
-            return False
-    return True
+            reason = "локальная запись отсутствует"
+        elif not getattr(related, "remote_id", None):
+            reason = "ещё не синхронизирован"
+        else:
+            continue
+        label = DEPENDENCY_LABELS.get(related_model, related_model.__name__)
+        missing.append(f"{label} {local_fk_value} ({reason})")
+    return missing
+
+
+def _format_blocked_dependencies(session: Session, model, objects):
+    details = []
+    for obj in objects[:5]:
+        reasons = _get_missing_dependencies(session, model, obj)
+        local_id = getattr(obj, "id", "?")
+        details.append(f"локальная запись #{local_id}: {', '.join(reasons)}")
+    suffix = "" if len(objects) <= 5 else f"; ещё {len(objects) - 5}"
+    return "; ".join(details) + suffix
 
 
 def _get_owner_scope_objects(session: Session, owner_id: int):
@@ -493,7 +517,7 @@ def _log_conflict(model_name: str, local_id: int, server_data: dict, local_data:
     try:
         ensure_state_dir()
         row = {
-            "ts": datetime.datetime.utcnow().isoformat(),
+            "ts": _utcnow().isoformat(),
             "model": model_name,
             "local_id": local_id,
             "server": server_data,
@@ -671,7 +695,6 @@ def _apply_deleted_records(
 ):
     processed = 0
     total_count = 0
-    ok = True
     url = f"{BASE_URL}/deleted-records/"
     params = {
         "deleted_after": last_sync.isoformat(),
@@ -738,96 +761,102 @@ def _apply_deleted_records(
         else:
             params["offset"] = processed
 
-    return ok
+    return True
 
-def sync_to_server(session: Session, progress_cb=None, should_stop=None, client_id=None):
+
+def _build_upload_payload(session: Session, model, objects, client_id: str):
+    payload = []
+    for obj in objects:
+        data = _prepare_outgoing_payload(session, model, serialize(obj))
+        local_id = data.pop("id", None)
+        data["local_id"] = local_id
+        data["client_id"] = client_id
+        if data.get("remote_id"):
+            data["id"] = data["remote_id"]
+        else:
+            data.pop("remote_id", None)
+            data.pop("id", None)
+        payload.append(data)
+    return payload
+
+
+def _sync_models_to_server(
+    session: Session,
+    candidates_by_model=None,
+    progress_cb=None,
+    should_stop=None,
+    client_id=None,
+):
     client_id = client_id or get_sync_client_id(session)
-    ok = True
     for model in UPLOAD_MODELS:
         _check_stop(should_stop)
         model_name = MODEL_NAMES[model]
-        candidates = session.query(model).filter_by(synced=False).all()
+        label = MODEL_LABELS.get(model_name, model_name)
+        if candidates_by_model is None:
+            candidates = session.query(model).filter_by(synced=False).all()
+        else:
+            candidates = [
+                obj for obj in candidates_by_model.get(model, [])
+                if not bool(getattr(obj, "synced", False))
+            ]
         if hasattr(model, "created_by_guest"):
             candidates = [obj for obj in candidates if not getattr(obj, "created_by_guest", False)]
-        unsynced = [obj for obj in candidates if _is_object_ready_for_sync(session, model, obj)]
-        blocked_count = len(candidates) - len(unsynced)
-        if not unsynced:
-            message = f"{MODEL_LABELS.get(model_name, model_name)}: 0 / 0"
-            if blocked_count:
-                message = f"Ожидание зависимостей для {blocked_count} записей"
+        ready = [obj for obj in candidates if _is_object_ready_for_sync(session, model, obj)]
+        ready_ids = {id(obj) for obj in ready}
+        blocked = [obj for obj in candidates if id(obj) not in ready_ids]
+
+        if not ready:
+            message = f"{label}: 0 / 0"
+            if blocked:
+                message = f"Ожидание зависимостей для {len(blocked)} записей"
+            _emit_progress(progress_cb, "upload", model_name, 0, 0, message)
+            if blocked:
+                details = _format_blocked_dependencies(session, model, blocked)
+                raise RuntimeError(f"{label}: не готовы зависимости. {details}")
+            continue
+
+        url = f"{BASE_URL}/{model_name}/post/"
+        processed = 0
+        total = len(ready)
+        processed_ids = set()
+        for chunk in _iter_upload_batches(session, model, ready):
+            _check_stop(should_stop)
+            response = _request_with_auth(
+                "POST",
+                url,
+                json=_build_upload_payload(session, model, chunk, client_id),
+            )
+            if response.status_code != 200:
+                details = response.text.strip() or "без описания"
+                raise RuntimeError(
+                    f"Ошибка отправки {label}: "
+                    f"HTTP {response.status_code}: {details}"
+                )
+
+            try:
+                acknowledged_ids, unresolved_ids = _apply_upload_results(
+                    session, model, model_name, chunk, response.json()
+                )
+            except Exception as exc:
+                session.rollback()
+                raise RuntimeError(f"Ошибка подтверждения {label}: {exc}") from exc
+
+            processed_ids.update(acknowledged_ids)
+            processed += len(acknowledged_ids)
             _emit_progress(
                 progress_cb,
                 "upload",
                 model_name,
-                0,
-                0,
-                message,
+                processed,
+                total,
+                f"{label}: {processed} / {total}",
             )
-            if blocked_count:
-                raise RuntimeError(
-                    f"{MODEL_LABELS.get(model_name, model_name)}: "
-                    f"для {blocked_count} записей не готовы связанные данные."
-                )
-            continue
-
-        url = f"{BASE_URL}/{MODEL_NAMES[model]}/post/"
-        processed = 0
-        total = len(unsynced)
-        processed_ids = set()
-        for chunk in _iter_upload_batches(session, model, unsynced):
-            _check_stop(should_stop)
-            payload = []
-            for obj in chunk:
-                data = _prepare_outgoing_payload(session, model, serialize(obj))
-                local_id = data.pop("id", None)
-                data["local_id"] = local_id
-                data["client_id"] = client_id
-                if data.get("remote_id"):
-                    data["id"] = data["remote_id"]
-                else:
-                    data.pop("remote_id", None)
-                    data.pop("id", None)
-                payload.append(data)
-
-            r = _request_with_auth("POST", url, json=payload)
-
-            if r.status_code == 200:
-                try:
-                    resp = r.json()
-                    acknowledged_ids, unresolved_ids = _apply_upload_results(
-                        session, model, model_name, chunk, resp
-                    )
-                except Exception as exc:
-                    session.rollback()
-                    raise RuntimeError(
-                        f"Ошибка подтверждения {MODEL_LABELS.get(model_name, model_name)}: {exc}"
-                    ) from exc
-
-                processed_ids.update(acknowledged_ids)
-                processed += len(acknowledged_ids)
-                if unresolved_ids:
-                    raise RuntimeError(
-                        f"Не разрешены конфликты {MODEL_LABELS.get(model_name, model_name)}: "
-                        + ", ".join(str(value) for value in unresolved_ids)
-                    )
-                _emit_progress(
-                    progress_cb,
-                    "upload",
-                    model_name,
-                    processed,
-                    total,
-                    f"{MODEL_LABELS.get(model_name, model_name)}: {processed} / {total}",
-                )
-                if unresolved_ids:
-                    break
-            else:
-                raise RuntimeError(
-                    f"Ошибка отправки {MODEL_LABELS.get(model_name, model_name)}: "
-                    f"HTTP {r.status_code}: {r.text}"
-                )
+            if unresolved_ids:
+                unresolved = ", ".join(str(value) for value in unresolved_ids)
+                raise RuntimeError(f"Не разрешены конфликты {label}: {unresolved}")
 
         if model is Sheep:
-            remaining = [obj for obj in unsynced if obj.id not in processed_ids]
+            remaining = [obj for obj in ready if obj.id not in processed_ids]
             if remaining:
                 _emit_progress(
                     progress_cb,
@@ -840,141 +869,38 @@ def sync_to_server(session: Session, progress_cb=None, should_stop=None, client_
                 raise RuntimeError(
                     f"Для {len(remaining)} овец сначала нужно синхронизировать родителей."
                 )
-        if blocked_count:
+        if blocked:
             _emit_progress(
                 progress_cb,
                 "upload",
                 model_name,
                 processed,
-                total + blocked_count,
-                f"Ожидание зависимостей для {blocked_count} записей",
+                total + len(blocked),
+                f"Ожидание зависимостей для {len(blocked)} записей",
             )
-            raise RuntimeError(
-                f"{MODEL_LABELS.get(model_name, model_name)}: "
-                f"для {blocked_count} записей не готовы связанные данные."
-            )
-        if not ok:
-            break
-    return ok
+            details = _format_blocked_dependencies(session, model, blocked)
+            raise RuntimeError(f"{label}: не готовы зависимости. {details}")
+    return True
+
+
+def sync_to_server(session: Session, progress_cb=None, should_stop=None, client_id=None):
+    return _sync_models_to_server(
+        session,
+        progress_cb=progress_cb,
+        should_stop=should_stop,
+        client_id=client_id,
+    )
 
 
 def sync_owner_to_server(session: Session, owner_id: int, progress_cb=None, should_stop=None, client_id=None):
-    client_id = client_id or get_sync_client_id(session)
-    scoped_objects = _get_owner_scope_objects(session, owner_id)
-    for model in UPLOAD_MODELS:
-        _check_stop(should_stop)
-        model_name = MODEL_NAMES[model]
-        candidates = [
-            obj for obj in scoped_objects.get(model, [])
-            if not bool(getattr(obj, "synced", False))
-        ]
-        if hasattr(model, "created_by_guest"):
-            candidates = [obj for obj in candidates if not getattr(obj, "created_by_guest", False)]
-        unsynced = [obj for obj in candidates if _is_object_ready_for_sync(session, model, obj)]
-        blocked_count = len(candidates) - len(unsynced)
-        if not unsynced:
-            message = f"{MODEL_LABELS.get(model_name, model_name)}: 0 / 0"
-            if blocked_count:
-                message = f"Ожидание зависимостей для {blocked_count} записей"
-            _emit_progress(
-                progress_cb,
-                "upload",
-                model_name,
-                0,
-                0,
-                message,
-            )
-            if blocked_count:
-                raise RuntimeError(
-                    f"{MODEL_LABELS.get(model_name, model_name)}: "
-                    f"{blocked_count} записей ожидают синхронизации зависимостей"
-                )
-            continue
+    return _sync_models_to_server(
+        session,
+        candidates_by_model=_get_owner_scope_objects(session, owner_id),
+        progress_cb=progress_cb,
+        should_stop=should_stop,
+        client_id=client_id,
+    )
 
-        url = f"{BASE_URL}/{MODEL_NAMES[model]}/post/"
-        processed = 0
-        total = len(unsynced)
-        processed_ids = set()
-        for chunk in _iter_upload_batches(session, model, unsynced):
-            _check_stop(should_stop)
-            payload = []
-            for obj in chunk:
-                data = _prepare_outgoing_payload(session, model, serialize(obj))
-                local_id = data.pop("id", None)
-                data["local_id"] = local_id
-                data["client_id"] = client_id
-                if data.get("remote_id"):
-                    data["id"] = data["remote_id"]
-                else:
-                    data.pop("remote_id", None)
-                    data.pop("id", None)
-                payload.append(data)
-
-            r = _request_with_auth("POST", url, json=payload)
-
-            if r.status_code == 200:
-                try:
-                    resp = r.json()
-                    acknowledged_ids, unresolved_ids = _apply_upload_results(
-                        session, model, model_name, chunk, resp
-                    )
-                except Exception as exc:
-                    session.rollback()
-                    raise RuntimeError(
-                        f"Ошибка подтверждения {MODEL_LABELS.get(model_name, model_name)}: {exc}"
-                    ) from exc
-
-                processed_ids.update(acknowledged_ids)
-                processed += len(acknowledged_ids)
-                _emit_progress(
-                    progress_cb,
-                    "upload",
-                    model_name,
-                    processed,
-                    total,
-                    f"{MODEL_LABELS.get(model_name, model_name)}: {processed} / {total}",
-                )
-                if unresolved_ids:
-                    raise RuntimeError(
-                        f"Сервер не подтвердил {len(unresolved_ids)} записей "
-                        f"{MODEL_LABELS.get(model_name, model_name)}"
-                    )
-            else:
-                details = r.text.strip() or "без описания"
-                raise RuntimeError(
-                    f"Ошибка отправки {MODEL_LABELS.get(model_name, model_name)}: "
-                    f"HTTP {r.status_code}: {details}"
-                )
-
-        if model is Sheep:
-            remaining = [obj for obj in unsynced if obj.id not in processed_ids]
-            if remaining:
-                _emit_progress(
-                    progress_cb,
-                    "upload",
-                    model_name,
-                    processed,
-                    total,
-                    f"Ожидание родителей для {len(remaining)} овец",
-                )
-                raise RuntimeError(
-                    f"Не удалось отправить {len(remaining)} овец: "
-                    "сначала нужно синхронизировать их родителей"
-                )
-        if blocked_count:
-            _emit_progress(
-                progress_cb,
-                "upload",
-                model_name,
-                processed,
-                total + blocked_count,
-                f"Ожидание зависимостей для {blocked_count} записей",
-            )
-            raise RuntimeError(
-                f"{MODEL_LABELS.get(model_name, model_name)}: "
-                f"{blocked_count} записей ожидают синхронизации зависимостей"
-            )
-    return True
 
 def sync_from_server(session: Session, sync_until=None, progress_cb=None, should_stop=None):
     last_sync = get_last_sync_time()
@@ -1108,63 +1034,56 @@ def sync_from_server(session: Session, sync_until=None, progress_cb=None, should
             )
     return True
 
-def run_sync(progress_cb=None, should_stop=None):
+def _run_sync_workflow(owner_id=None, progress_cb=None, should_stop=None):
     session = init_db()
     try:
         sync_until = get_server_sync_cursor()
         client_id = get_sync_client_id(session)
         _emit_progress(progress_cb, "download", "", 0, 0, "Загрузка справочников...")
         sync_reference_data(session, progress_cb=progress_cb, should_stop=should_stop)
-        _emit_progress(progress_cb, "upload", "", 0, 0, "Отправка локальных данных...")
-        ok_up = sync_to_server(
-            session,
-            progress_cb=progress_cb,
-            should_stop=should_stop,
-            client_id=client_id,
+        upload_message = (
+            "Отправка локальных данных..."
+            if owner_id is None else "Отправка данных хозяйства..."
         )
+        _emit_progress(progress_cb, "upload", "", 0, 0, upload_message)
+        upload_kwargs = {
+            "progress_cb": progress_cb,
+            "should_stop": should_stop,
+            "client_id": client_id,
+        }
+        if owner_id is None:
+            sync_to_server(session, **upload_kwargs)
+        else:
+            sync_owner_to_server(session, owner_id, **upload_kwargs)
+
         _check_stop(should_stop)
-        _emit_progress(progress_cb, "download", "", 0, 0, "Загрузка данных с сервера...")
-        ok_down = sync_from_server(
+        download_message = (
+            "Загрузка данных с сервера..."
+            if owner_id is None else "Загрузка обновлений с сервера..."
+        )
+        _emit_progress(progress_cb, "download", "", 0, 0, download_message)
+        sync_from_server(
             session,
             sync_until=sync_until,
             progress_cb=progress_cb,
             should_stop=should_stop,
         )
-        if ok_up and ok_down:
-            update_last_sync_time(sync_until)
-        return ok_up and ok_down
+        update_last_sync_time(sync_until)
+        return True
     finally:
         session.close()
+
+
+def run_sync(progress_cb=None, should_stop=None):
+    return _run_sync_workflow(progress_cb=progress_cb, should_stop=should_stop)
 
 
 def run_owner_sync(owner_id: int, progress_cb=None, should_stop=None):
-    session = init_db()
-    try:
-        sync_until = get_server_sync_cursor()
-        client_id = get_sync_client_id(session)
-        _emit_progress(progress_cb, "download", "", 0, 0, "Загрузка справочников...")
-        sync_reference_data(session, progress_cb=progress_cb, should_stop=should_stop)
-        _emit_progress(progress_cb, "upload", "", 0, 0, "Отправка данных хозяйства...")
-        ok_up = sync_owner_to_server(
-            session,
-            owner_id,
-            progress_cb=progress_cb,
-            should_stop=should_stop,
-            client_id=client_id,
-        )
-        _check_stop(should_stop)
-        _emit_progress(progress_cb, "download", "", 0, 0, "Загрузка обновлений с сервера...")
-        ok_down = sync_from_server(
-            session,
-            sync_until=sync_until,
-            progress_cb=progress_cb,
-            should_stop=should_stop,
-        )
-        if ok_up and ok_down:
-            update_last_sync_time(sync_until)
-        return ok_up and ok_down
-    finally:
-        session.close()
+    return _run_sync_workflow(
+        owner_id=owner_id,
+        progress_cb=progress_cb,
+        should_stop=should_stop,
+    )
 
 if __name__ == "__main__":
     run_sync()

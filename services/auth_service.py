@@ -1,5 +1,6 @@
 import json
 import os
+import tempfile
 
 import requests
 
@@ -7,39 +8,51 @@ from auth_state import AuthState
 from state_paths import TOKENS_PATH, USER_PATH, ensure_state_dir
 
 
-def load_tokens():
-    if not os.path.exists(TOKENS_PATH):
-        return {}
+def _load_json(path):
     try:
-        with open(TOKENS_PATH, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        if isinstance(data, dict):
-            return data
+        with open(path, "r", encoding="utf-8") as file:
+            data = json.load(file)
+    except (FileNotFoundError, OSError, json.JSONDecodeError, TypeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _save_json(path, data):
+    ensure_state_dir()
+    directory = os.path.dirname(path) or "."
+    file_descriptor, temporary_path = tempfile.mkstemp(
+        prefix=f".{os.path.basename(path)}.",
+        suffix=".tmp",
+        dir=directory,
+    )
+    try:
+        with os.fdopen(file_descriptor, "w", encoding="utf-8") as file:
+            json.dump(data, file, ensure_ascii=False)
+            file.flush()
+            os.fsync(file.fileno())
+        os.replace(temporary_path, path)
     except Exception:
-        pass
-    return {}
+        try:
+            os.unlink(temporary_path)
+        except OSError:
+            pass
+        raise
+
+
+def load_tokens():
+    return _load_json(TOKENS_PATH)
 
 
 def save_tokens(access: str, refresh: str):
-    ensure_state_dir()
-    with open(TOKENS_PATH, "w", encoding="utf-8") as f:
-        json.dump({"access": access, "refresh": refresh}, f)
+    _save_json(TOKENS_PATH, {"access": access, "refresh": refresh})
 
 
 def load_user():
-    if not os.path.exists(USER_PATH):
-        return None
-    try:
-        with open(USER_PATH, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return None
+    return _load_json(USER_PATH) or None
 
 
 def save_user(user: dict):
-    ensure_state_dir()
-    with open(USER_PATH, "w", encoding="utf-8") as f:
-        json.dump(user, f, ensure_ascii=False)
+    _save_json(USER_PATH, user)
 
 
 def login_user(token_url: str, me_url: str, username: str, password: str, timeout: int = 10):
@@ -90,9 +103,10 @@ def clear_session():
 
     for path in (TOKENS_PATH, USER_PATH):
         try:
-            if os.path.exists(path):
-                os.remove(path)
-        except Exception:
+            os.remove(path)
+        except FileNotFoundError:
+            pass
+        except OSError:
             pass
 
 

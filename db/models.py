@@ -8,6 +8,11 @@ from state_paths import ensure_db_path
 
 Base = declarative_base()
 
+
+def utcnow_naive():
+    """Return UTC in the naive format used by existing SQLite DateTime columns."""
+    return datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+
 # связь "овца ↔ родители" (self many-to-many)
 sheep_parents = Table(
     "sheep_parents",
@@ -34,7 +39,7 @@ class User(Base):
     home = Column(String)
 
     synced = Column(Boolean, default=False)
-    updated_at = Column(DateTime, default=datetime.datetime.utcnow)
+    updated_at = Column(DateTime, default=utcnow_naive)
 
 
 class Color(Base):
@@ -46,7 +51,7 @@ class Color(Base):
     is_deleted = Column(Boolean, default=False)
 
     synced = Column(Boolean, default=False)
-    updated_at = Column(DateTime, default=datetime.datetime.utcnow)
+    updated_at = Column(DateTime, default=utcnow_naive)
 
     def __repr__(self):
         return f"<Color(name='{self.name}')>"
@@ -86,7 +91,7 @@ class Sheep(Base):
     is_deleted = Column(Boolean, default=False)
 
     synced = Column(Boolean, default=False)
-    updated_at = Column(DateTime, default=datetime.datetime.utcnow)
+    updated_at = Column(DateTime, default=utcnow_naive)
 
     parents = relationship(
         "Sheep",
@@ -110,7 +115,7 @@ class Lamb(Base):
     is_deleted = Column(Boolean, default=False)
 
     synced = Column(Boolean, default=False)
-    updated_at = Column(DateTime, default=datetime.datetime.utcnow)
+    updated_at = Column(DateTime, default=utcnow_naive)
 
 
 # 👥 Владелец (связь Sheep ↔ User)
@@ -129,7 +134,7 @@ class Owner(Base):
     owner = relationship("User")
 
     synced = Column(Boolean, default=False)
-    updated_at = Column(DateTime, default=datetime.datetime.utcnow)
+    updated_at = Column(DateTime, default=utcnow_naive)
 
 
 class SyncMetadata(Base):
@@ -146,7 +151,7 @@ class Boniter(Base):
     contact_info = Column(Text, nullable=True)
 
     synced = Column(Boolean, default=False)
-    updated_at = Column(DateTime, default=datetime.datetime.utcnow)
+    updated_at = Column(DateTime, default=utcnow_naive)
 
 
 # 📝 Бонитировка
@@ -187,7 +192,7 @@ class Application(Base):
     is_printed = Column(Boolean, default=False)
     is_deleted = Column(Boolean, default=False)
     synced = Column(Boolean, default=False)
-    updated_at = Column(DateTime, default=datetime.datetime.utcnow)
+    updated_at = Column(DateTime, default=utcnow_naive)
 
 class Photo(Base):
     __tablename__ = 'photos'
@@ -198,7 +203,7 @@ class Photo(Base):
     image = Column(String)
 
     synced = Column(Boolean, default=False)
-    updated_at = Column(DateTime, default=datetime.datetime.utcnow)
+    updated_at = Column(DateTime, default=utcnow_naive)
 
 
 def _get_columns(conn, table_name):

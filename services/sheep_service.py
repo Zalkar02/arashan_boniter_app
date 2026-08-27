@@ -1,13 +1,13 @@
 import datetime
 
-from db.models import Application, Lamb, Owner, Sheep
+from db.models import Application, Lamb, Owner, Sheep, utcnow_naive
 from services.owner_search_service import _norm
 
 
 def _prepare_deleted_sheep_for_reuse(session, sheep, owner_id, date_filling):
     sheep.is_deleted = False
     sheep.synced = False
-    sheep.updated_at = datetime.datetime.utcnow()
+    sheep.updated_at = utcnow_naive()
     sheep.is_paid = False
     sheep.is_printed = False
     sheep.payment_reference = None
@@ -19,7 +19,7 @@ def _prepare_deleted_sheep_for_reuse(session, sheep, owner_id, date_filling):
     for application in old_applications:
         application.is_deleted = True
         application.synced = False
-        application.updated_at = datetime.datetime.utcnow()
+        application.updated_at = utcnow_naive()
         application.is_paid = False
         application.is_printed = False
         application.payment_reference = None
@@ -30,7 +30,7 @@ def _prepare_deleted_sheep_for_reuse(session, sheep, owner_id, date_filling):
         link.is_deleted = True
         link.owner_bool = False
         link.synced = False
-        link.updated_at = datetime.datetime.utcnow()
+        link.updated_at = utcnow_naive()
         if not getattr(link, "date2", None):
             link.date2 = date_filling or datetime.date.today()
 
@@ -38,7 +38,7 @@ def _prepare_deleted_sheep_for_reuse(session, sheep, owner_id, date_filling):
     if lamb is not None:
         lamb.is_deleted = True
         lamb.synced = False
-        lamb.updated_at = datetime.datetime.utcnow()
+        lamb.updated_at = utcnow_naive()
 
 
 def save_sheep_bundle(session, payload: dict):
@@ -88,7 +88,7 @@ def save_sheep_bundle(session, payload: dict):
     else:
         for field_name, value in sheep_fields.items():
             setattr(sheep, field_name, value)
-        sheep.updated_at = datetime.datetime.utcnow()
+        sheep.updated_at = utcnow_naive()
         sheep.synced = False
 
     if created or reused_deleted_sheep:
@@ -110,7 +110,7 @@ def save_sheep_bundle(session, payload: dict):
         for link in active_links:
             link.owner_bool = False
             link.date2 = change_date
-            link.updated_at = datetime.datetime.utcnow()
+            link.updated_at = utcnow_naive()
             link.synced = False
         new_link = Owner(
             sheep_id=sheep.id,
@@ -140,7 +140,7 @@ def save_sheep_bundle(session, payload: dict):
         else:
             for field_name, value in application_data.items():
                 setattr(application, field_name, value)
-            application.updated_at = datetime.datetime.utcnow()
+            application.updated_at = utcnow_naive()
             application.synced = False
 
     lamb_data = payload.get("lamb")
@@ -152,7 +152,7 @@ def save_sheep_bundle(session, payload: dict):
         else:
             for field_name, value in lamb_data.items():
                 setattr(lamb, field_name, value)
-            lamb.updated_at = datetime.datetime.utcnow()
+            lamb.updated_at = utcnow_naive()
             lamb.synced = False
 
     session.commit()
@@ -168,7 +168,7 @@ def soft_delete_sheep_record(session, row: dict, current_user_id):
         if getattr(latest_application, "created_by_user_id", None) != current_user_id:
             raise RuntimeError("Удалять можно только свои бонитировки.")
         latest_application.is_deleted = True
-        latest_application.updated_at = datetime.datetime.utcnow()
+        latest_application.updated_at = utcnow_naive()
         latest_application.synced = False
         session.commit()
         return "Бонитировка удалена"
@@ -177,11 +177,11 @@ def soft_delete_sheep_record(session, row: dict, current_user_id):
         raise RuntimeError("Удалять можно только своих овец.")
 
     sheep.is_deleted = True
-    sheep.updated_at = datetime.datetime.utcnow()
+    sheep.updated_at = utcnow_naive()
     sheep.synced = False
     for application in row.get("applications", []):
         application.is_deleted = True
-        application.updated_at = datetime.datetime.utcnow()
+        application.updated_at = utcnow_naive()
         application.synced = False
     session.commit()
     return "Овца удалена"
