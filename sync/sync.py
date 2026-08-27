@@ -34,12 +34,14 @@ MODEL_NAMES = {
     Lamb: "lamb",
     Application: "application",
     Color: "color",
+    Boniter: "boniter",
     Owner: "owner",
     User: "user",
 }
 MODEL_BY_SYNC_NAME = {value: key for key, value in MODEL_NAMES.items()}
 MODEL_LABELS = {
     "color": "Окрасы",
+    "boniter": "Бонитёры",
     "user": "Владельцы",
     "sheep": "Овцы",
     "lamb": "Ягнята",
@@ -383,6 +385,110 @@ def _extract_sheep_parent_ids(session: Session, item: dict):
         parent_ids.append(parent.id)
     return parent_ids
 
+
+def _load_missing_sheep_parents(session: Session, pending_items, progress_cb=None, should_stop=None):
+    """Download parents omitted from the incremental sheep response, including ancestors."""
+    pending_by_remote_id = {
+        remote_id: item for remote_id, item in pending_items if remote_id is not None
+    }
+    requested_ids = set()
+
+    while True:
+        _check_stop(should_stop)
+        referenced_ids = {
+            parent_remote_id
+            for item in pending_by_remote_id.values()
+            if isinstance(item.get("parent"), list)
+            for parent_remote_id in item["parent"]
+        }
+        existing_ids = (
+            {
+                row[0]
+                for row in session.query(Sheep.remote_id).filter(
+                    Sheep.remote_id.in_(referenced_ids)
+                ).all()
+            }
+            if referenced_ids else set()
+        )
+        missing_ids = referenced_ids - existing_ids
+        if not missing_ids:
+            break
+
+        new_ids = missing_ids - requested_ids
+        if not new_ids:
+            missing_text = ", ".join(str(value) for value in sorted(missing_ids)[:20])
+            raise RuntimeError(
+                "Сервер не вернул отсутствующих родителей овец. "
+                f"ID: {missing_text}"
+            )
+
+        for chunk in _iter_chunks(sorted(new_ids), SYNC_BATCH_SIZE):
+            _check_stop(should_stop)
+            response = _request_with_auth(
+                "GET",
+                f"{BASE_URL}/sheep/",
+                params={"ids": ",".join(str(value) for value in chunk)},
+            )
+            if response.status_code != 200:
+                details = response.text.strip() or "без описания"
+                raise RuntimeError(
+                    f"Ошибка загрузки родителей овец: HTTP {response.status_code}: {details}"
+                )
+
+            payload = response.json()
+            items, _ = _extract_response_items(payload)
+            received_ids = set()
+            for item in items:
+                remote_id = item.get("id")
+                if remote_id is None:
+                    continue
+                received_ids.add(remote_id)
+                clean_item = _normalize_item(session, Sheep, item)
+                local = session.query(Sheep).filter_by(remote_id=remote_id).first()
+                if local is not None:
+                    if not bool(local.synced):
+                        _log_conflict("sheep", local.id, item, serialize(local))
+                        raise RuntimeError(
+                            f"Конфликт овцы: локальная запись {local.id} ещё не отправлена"
+                        )
+                    for key, value in clean_item.items():
+                        setattr(local, key, value)
+                else:
+                    session.add(Sheep(**clean_item))
+                if "parent" in item:
+                    pending_by_remote_id[remote_id] = item
+            session.commit()
+            requested_ids.update(chunk)
+
+            not_returned = set(chunk) - received_ids
+            if not_returned:
+                missing_text = ", ".join(str(value) for value in sorted(not_returned)[:20])
+                raise RuntimeError(
+                    "На сервере не найдены родители овец с ID: " + missing_text
+                )
+
+        _emit_progress(
+            progress_cb,
+            "download",
+            "sheep",
+            len(requested_ids),
+            len(requested_ids),
+            f"Догружены родители овец: {len(requested_ids)}",
+        )
+
+    for remote_id, item in pending_by_remote_id.items():
+        local_sheep = session.query(Sheep).filter_by(remote_id=remote_id).first()
+        if local_sheep is None:
+            continue
+        parent_ids = _extract_sheep_parent_ids(session, item)
+        if parent_ids is None:
+            raise RuntimeError(f"Не удалось связать родителей овцы #{remote_id}")
+        local_sheep.parents = (
+            session.query(Sheep).filter(Sheep.id.in_(parent_ids)).all()
+            if parent_ids else []
+        )
+    session.commit()
+
 def _log_conflict(model_name: str, local_id: int, server_data: dict, local_data: dict):
     try:
         ensure_state_dir()
@@ -433,6 +539,60 @@ def _extract_response_items(payload):
             next_url = payload.get("next")
             return results, bool(next_url)
     raise SyncProtocolError("Сервер вернул некорректный формат списка синхронизации.")
+
+
+def sync_reference_data(session: Session, progress_cb=None, should_stop=None):
+    """Refresh server-owned dictionaries required to upload local records."""
+    for model in (Color, Boniter):
+        _check_stop(should_stop)
+        model_name = MODEL_NAMES[model]
+        response = _request_with_auth(
+            "GET",
+            f"{BASE_URL}/{model_name}/",
+            params={"full": "1"},
+        )
+        if response.status_code != 200:
+            details = response.text.strip() or "без описания"
+            raise RuntimeError(
+                f"Ошибка загрузки {MODEL_LABELS[model_name]}: "
+                f"HTTP {response.status_code}: {details}"
+            )
+
+        payload = response.json()
+        items, _ = _extract_response_items(payload)
+        for item in items:
+            remote_id = item.get("id")
+            if remote_id is None:
+                continue
+            clean_item = _normalize_item(session, model, item)
+            local = session.query(model).filter_by(remote_id=remote_id).first()
+            if local is None:
+                local = model(**clean_item)
+                session.add(local)
+            else:
+                for key, value in clean_item.items():
+                    setattr(local, key, value)
+        session.commit()
+        _emit_progress(
+            progress_cb,
+            "download",
+            model_name,
+            len(items),
+            len(items),
+            f"{MODEL_LABELS[model_name]}: {len(items)} / {len(items)}",
+        )
+
+    # Older databases stored the server boniter ID directly in FK columns even
+    # though no local Boniter rows existed. Convert those dangling values now.
+    for model in (Sheep, Application):
+        for obj in session.query(model).filter(model.boniter.isnot(None)).all():
+            if session.query(Boniter).filter_by(id=obj.boniter).first() is not None:
+                continue
+            related = session.query(Boniter).filter_by(remote_id=obj.boniter).first()
+            if related is not None:
+                obj.boniter = related.id
+    session.commit()
+    return True
 
 
 def _extract_upload_results(payload):
@@ -523,8 +683,9 @@ def _apply_deleted_records(
         _check_stop(should_stop)
         r = _request_with_auth("GET", url, params=params)
         if r.status_code != 200:
-            print(f"Error fetching deleted records: {r.status_code} {r.text}")
-            return False
+            raise RuntimeError(
+                f"Ошибка загрузки удалений: HTTP {r.status_code}: {r.text}"
+            )
 
         payload = r.json()
         items, has_next = _extract_response_items(payload)
@@ -548,8 +709,10 @@ def _apply_deleted_records(
                     item,
                     serialize(local),
                 )
-                ok = False
-                continue
+                raise RuntimeError(
+                    f"Конфликт удаления {item.get('model_name')} #{remote_id}: "
+                    "локальная запись ещё не отправлена."
+                )
             local.is_deleted = True
             if hasattr(local, "synced"):
                 local.synced = True
@@ -601,7 +764,10 @@ def sync_to_server(session: Session, progress_cb=None, should_stop=None, client_
                 message,
             )
             if blocked_count:
-                return False
+                raise RuntimeError(
+                    f"{MODEL_LABELS.get(model_name, model_name)}: "
+                    f"для {blocked_count} записей не готовы связанные данные."
+                )
             continue
 
         url = f"{BASE_URL}/{MODEL_NAMES[model]}/post/"
@@ -633,14 +799,17 @@ def sync_to_server(session: Session, progress_cb=None, should_stop=None, client_
                     )
                 except Exception as exc:
                     session.rollback()
-                    ok = False
-                    print(f"Error applying sync response for {model.__name__}: {exc}")
-                    break
+                    raise RuntimeError(
+                        f"Ошибка подтверждения {MODEL_LABELS.get(model_name, model_name)}: {exc}"
+                    ) from exc
 
                 processed_ids.update(acknowledged_ids)
                 processed += len(acknowledged_ids)
                 if unresolved_ids:
-                    ok = False
+                    raise RuntimeError(
+                        f"Не разрешены конфликты {MODEL_LABELS.get(model_name, model_name)}: "
+                        + ", ".join(str(value) for value in unresolved_ids)
+                    )
                 _emit_progress(
                     progress_cb,
                     "upload",
@@ -652,14 +821,14 @@ def sync_to_server(session: Session, progress_cb=None, should_stop=None, client_
                 if unresolved_ids:
                     break
             else:
-                ok = False
-                print(f"Error syncing {model.__name__}: {r.status_code} {r.text}")
-                break
+                raise RuntimeError(
+                    f"Ошибка отправки {MODEL_LABELS.get(model_name, model_name)}: "
+                    f"HTTP {r.status_code}: {r.text}"
+                )
 
         if model is Sheep:
             remaining = [obj for obj in unsynced if obj.id not in processed_ids]
             if remaining:
-                ok = False
                 _emit_progress(
                     progress_cb,
                     "upload",
@@ -668,8 +837,10 @@ def sync_to_server(session: Session, progress_cb=None, should_stop=None, client_
                     total,
                     f"Ожидание родителей для {len(remaining)} овец",
                 )
+                raise RuntimeError(
+                    f"Для {len(remaining)} овец сначала нужно синхронизировать родителей."
+                )
         if blocked_count:
-            ok = False
             _emit_progress(
                 progress_cb,
                 "upload",
@@ -678,6 +849,10 @@ def sync_to_server(session: Session, progress_cb=None, should_stop=None, client_
                 total + blocked_count,
                 f"Ожидание зависимостей для {blocked_count} записей",
             )
+            raise RuntimeError(
+                f"{MODEL_LABELS.get(model_name, model_name)}: "
+                f"для {blocked_count} записей не готовы связанные данные."
+            )
         if not ok:
             break
     return ok
@@ -685,7 +860,6 @@ def sync_to_server(session: Session, progress_cb=None, should_stop=None, client_
 
 def sync_owner_to_server(session: Session, owner_id: int, progress_cb=None, should_stop=None, client_id=None):
     client_id = client_id or get_sync_client_id(session)
-    ok = True
     scoped_objects = _get_owner_scope_objects(session, owner_id)
     for model in UPLOAD_MODELS:
         _check_stop(should_stop)
@@ -711,7 +885,10 @@ def sync_owner_to_server(session: Session, owner_id: int, progress_cb=None, shou
                 message,
             )
             if blocked_count:
-                return False
+                raise RuntimeError(
+                    f"{MODEL_LABELS.get(model_name, model_name)}: "
+                    f"{blocked_count} записей ожидают синхронизации зависимостей"
+                )
             continue
 
         url = f"{BASE_URL}/{MODEL_NAMES[model]}/post/"
@@ -743,14 +920,12 @@ def sync_owner_to_server(session: Session, owner_id: int, progress_cb=None, shou
                     )
                 except Exception as exc:
                     session.rollback()
-                    ok = False
-                    print(f"Error applying sync response for {model.__name__}: {exc}")
-                    break
+                    raise RuntimeError(
+                        f"Ошибка подтверждения {MODEL_LABELS.get(model_name, model_name)}: {exc}"
+                    ) from exc
 
                 processed_ids.update(acknowledged_ids)
                 processed += len(acknowledged_ids)
-                if unresolved_ids:
-                    ok = False
                 _emit_progress(
                     progress_cb,
                     "upload",
@@ -760,16 +935,20 @@ def sync_owner_to_server(session: Session, owner_id: int, progress_cb=None, shou
                     f"{MODEL_LABELS.get(model_name, model_name)}: {processed} / {total}",
                 )
                 if unresolved_ids:
-                    break
+                    raise RuntimeError(
+                        f"Сервер не подтвердил {len(unresolved_ids)} записей "
+                        f"{MODEL_LABELS.get(model_name, model_name)}"
+                    )
             else:
-                ok = False
-                print(f"Error syncing {model.__name__}: {r.status_code} {r.text}")
-                break
+                details = r.text.strip() or "без описания"
+                raise RuntimeError(
+                    f"Ошибка отправки {MODEL_LABELS.get(model_name, model_name)}: "
+                    f"HTTP {r.status_code}: {details}"
+                )
 
         if model is Sheep:
             remaining = [obj for obj in unsynced if obj.id not in processed_ids]
             if remaining:
-                ok = False
                 _emit_progress(
                     progress_cb,
                     "upload",
@@ -778,8 +957,11 @@ def sync_owner_to_server(session: Session, owner_id: int, progress_cb=None, shou
                     total,
                     f"Ожидание родителей для {len(remaining)} овец",
                 )
+                raise RuntimeError(
+                    f"Не удалось отправить {len(remaining)} овец: "
+                    "сначала нужно синхронизировать их родителей"
+                )
         if blocked_count:
-            ok = False
             _emit_progress(
                 progress_cb,
                 "upload",
@@ -788,21 +970,21 @@ def sync_owner_to_server(session: Session, owner_id: int, progress_cb=None, shou
                 total + blocked_count,
                 f"Ожидание зависимостей для {blocked_count} записей",
             )
-        if not ok:
-            break
-    return ok
+            raise RuntimeError(
+                f"{MODEL_LABELS.get(model_name, model_name)}: "
+                f"{blocked_count} записей ожидают синхронизации зависимостей"
+            )
+    return True
 
 def sync_from_server(session: Session, sync_until=None, progress_cb=None, should_stop=None):
-    ok = True
     last_sync = get_last_sync_time()
-    if not _apply_deleted_records(
+    _apply_deleted_records(
         session,
         last_sync,
         sync_until=sync_until,
         progress_cb=progress_cb,
         should_stop=should_stop,
-    ):
-        ok = False
+    )
     for model in DOWNLOAD_MODELS:
         _check_stop(should_stop)
         name = MODEL_NAMES[model]
@@ -810,19 +992,26 @@ def sync_from_server(session: Session, sync_until=None, progress_cb=None, should
         total_count = 0
         pending_sheep_parents = []
         url = f"{BASE_URL}/{name}/"
-        params = {
-            "updated_after": last_sync.isoformat(),
-            "limit": SYNC_BATCH_SIZE,
-        }
-        if sync_until is not None:
-            params["updated_before"] = sync_until.isoformat()
+        if model is Color:
+            # Colors are a small reference table required before sheep FK mapping.
+            # Always refresh the complete list so a stale watermark cannot omit it.
+            params = {"full": "1"}
+        else:
+            params = {
+                "updated_after": last_sync.isoformat(),
+                "limit": SYNC_BATCH_SIZE,
+            }
+            if sync_until is not None:
+                params["updated_before"] = sync_until.isoformat()
         while True:
             _check_stop(should_stop)
             r = _request_with_auth("GET", url, params=params)
             if r.status_code != 200:
-                ok = False
-                print(f"Error fetching {name}: {r.status_code} {r.text}")
-                break
+                details = r.text.strip() or "без описания"
+                raise RuntimeError(
+                    f"Ошибка загрузки {MODEL_LABELS.get(name, name)}: "
+                    f"HTTP {r.status_code}: {details}"
+                )
 
             payload = r.json()
             items, has_next = _extract_response_items(payload)
@@ -843,8 +1032,11 @@ def sync_from_server(session: Session, sync_until=None, progress_cb=None, should
                 if local:
                     if hasattr(local, "synced") and not bool(local.synced):
                         _log_conflict(name, local.id, item, serialize(local))
-                        ok = False
-                        continue
+                        raise RuntimeError(
+                            f"Конфликт {MODEL_LABELS.get(name, name)}: "
+                            f"локальная запись {local.id} ещё не отправлена, "
+                            "поэтому данные сервера не применены"
+                        )
                     for k, v in clean_item.items():
                         if k == "id":
                             continue
@@ -857,8 +1049,11 @@ def sync_from_server(session: Session, sync_until=None, progress_cb=None, should
                         new = model(**clean_item)
                         session.add(new)
                     except Exception as e:
-                        ok = False
-                        print(f"Ошибка при вставке {model.__name__} ({remote_id}): {e}")
+                        session.rollback()
+                        raise RuntimeError(
+                            f"Ошибка сохранения {MODEL_LABELS.get(name, name)} "
+                            f"(серверный ID {remote_id}): {e}"
+                        ) from e
                 if model is Sheep and "parent" in item:
                     pending_sheep_parents.append((remote_id, item))
             session.commit()
@@ -897,22 +1092,29 @@ def sync_from_server(session: Session, sync_until=None, progress_cb=None, should
             else:
                 params["offset"] = processed
         if model is Sheep and pending_sheep_parents:
-            ok = False
             _emit_progress(
                 progress_cb,
                 "download",
                 name,
                 processed,
                 total_count or processed,
-                f"Не удалось связать родителей для {len(pending_sheep_parents)} овец",
+                f"Догружаются родители для {len(pending_sheep_parents)} овец",
             )
-    return ok
+            _load_missing_sheep_parents(
+                session,
+                pending_sheep_parents,
+                progress_cb=progress_cb,
+                should_stop=should_stop,
+            )
+    return True
 
 def run_sync(progress_cb=None, should_stop=None):
     session = init_db()
     try:
         sync_until = get_server_sync_cursor()
         client_id = get_sync_client_id(session)
+        _emit_progress(progress_cb, "download", "", 0, 0, "Загрузка справочников...")
+        sync_reference_data(session, progress_cb=progress_cb, should_stop=should_stop)
         _emit_progress(progress_cb, "upload", "", 0, 0, "Отправка локальных данных...")
         ok_up = sync_to_server(
             session,
@@ -940,6 +1142,8 @@ def run_owner_sync(owner_id: int, progress_cb=None, should_stop=None):
     try:
         sync_until = get_server_sync_cursor()
         client_id = get_sync_client_id(session)
+        _emit_progress(progress_cb, "download", "", 0, 0, "Загрузка справочников...")
+        sync_reference_data(session, progress_cb=progress_cb, should_stop=should_stop)
         _emit_progress(progress_cb, "upload", "", 0, 0, "Отправка данных хозяйства...")
         ok_up = sync_owner_to_server(
             session,

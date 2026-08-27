@@ -5,7 +5,7 @@ import unittest
 import uuid
 from unittest.mock import MagicMock, patch
 
-from db.models import Color, Owner, Sheep, init_db
+from db.models import Application, Boniter, Color, Owner, Sheep, init_db
 from sync import sync as sync_module
 
 
@@ -53,12 +53,11 @@ class SyncServiceTests(unittest.TestCase):
                 "_request_with_auth",
                 return_value=FakeResponse(payload=[]),
             ),
-            patch("builtins.print"),
         ):
-            result = sync_module.sync_to_server(self.session)
+            with self.assertRaises(RuntimeError):
+                sync_module.sync_to_server(self.session)
 
         self.session.refresh(color)
-        self.assertFalse(result)
         self.assertFalse(color.synced)
         self.assertIsNone(color.remote_id)
 
@@ -104,6 +103,55 @@ class SyncServiceTests(unittest.TestCase):
     def test_owner_model_persists_soft_delete_state(self):
         self.assertIn("is_deleted", Owner.__table__.columns)
 
+    def test_colors_are_always_downloaded_as_a_full_reference_list(self):
+        request = MagicMock(
+            return_value=FakeResponse(
+                payload={
+                    "results": [{"id": 7, "name": "Белый", "is_deleted": False}],
+                    "next": None,
+                    "count": 1,
+                }
+            )
+        )
+        with (
+            patch.object(sync_module, "DOWNLOAD_MODELS", [Color]),
+            patch.object(sync_module, "get_last_sync_time", return_value=datetime.datetime(2026, 8, 27)),
+            patch.object(sync_module, "_apply_deleted_records", return_value=True),
+            patch.object(sync_module, "_request_with_auth", request),
+        ):
+            result = sync_module.sync_from_server(self.session)
+
+        self.assertTrue(result)
+        self.assertEqual(self.session.query(Color).one().remote_id, 7)
+        self.assertEqual(request.call_args.kwargs["params"], {"full": "1"})
+
+    def test_reference_sync_loads_boniter_and_repairs_dangling_fk(self):
+        sheep = Sheep(id_n="dangling-boniter", boniter=3, synced=False)
+        application = Application(sheep=sheep, boniter=3, synced=False)
+        self.session.add_all([sheep, application])
+        self.session.commit()
+
+        responses = [
+            FakeResponse(payload={"results": [], "next": None, "count": 0}),
+            FakeResponse(
+                payload={
+                    "results": [{"id": 3, "name": "Server Boniter", "contact_info": ""}],
+                    "next": None,
+                    "count": 1,
+                }
+            ),
+        ]
+        with patch.object(sync_module, "_request_with_auth", side_effect=responses):
+            result = sync_module.sync_reference_data(self.session)
+
+        boniter = self.session.query(Boniter).one()
+        self.session.refresh(sheep)
+        self.session.refresh(application)
+        self.assertTrue(result)
+        self.assertEqual(boniter.remote_id, 3)
+        self.assertEqual(sheep.boniter, boniter.id)
+        self.assertEqual(application.boniter, boniter.id)
+
     def test_download_does_not_overwrite_unsynced_local_record(self):
         color = Color(name="Локальное название", remote_id=10, synced=False)
         self.session.add(color)
@@ -125,10 +173,10 @@ class SyncServiceTests(unittest.TestCase):
             ),
             patch.object(sync_module, "_log_conflict"),
         ):
-            result = sync_module.sync_from_server(self.session)
+            with self.assertRaises(RuntimeError):
+                sync_module.sync_from_server(self.session)
 
         self.session.refresh(color)
-        self.assertFalse(result)
         self.assertEqual(color.name, "Локальное название")
         self.assertFalse(color.synced)
 
@@ -162,6 +210,37 @@ class SyncServiceTests(unittest.TestCase):
         self.assertTrue(result)
         self.assertEqual([parent.remote_id for parent in child.parents], [2])
 
+    def test_missing_sheep_parent_is_downloaded_by_id(self):
+        responses = [
+            FakeResponse(
+                payload={
+                    "results": [{"id": 1, "id_n": "child", "parent": [2]}],
+                    "next": None,
+                    "count": 1,
+                }
+            ),
+            FakeResponse(
+                payload={
+                    "results": [{"id": 2, "id_n": "parent", "parent": []}],
+                    "next": None,
+                    "count": 1,
+                }
+            ),
+        ]
+        request = MagicMock(side_effect=responses)
+        with (
+            patch.object(sync_module, "DOWNLOAD_MODELS", [Sheep]),
+            patch.object(sync_module, "get_last_sync_time", return_value=datetime.datetime(2000, 1, 1)),
+            patch.object(sync_module, "_apply_deleted_records", return_value=True),
+            patch.object(sync_module, "_request_with_auth", request),
+        ):
+            result = sync_module.sync_from_server(self.session)
+
+        child = self.session.query(Sheep).filter_by(remote_id=1).one()
+        self.assertTrue(result)
+        self.assertEqual([parent.remote_id for parent in child.parents], [2])
+        self.assertEqual(request.call_args.kwargs["params"], {"ids": "2"})
+
     def test_successful_run_saves_start_watermark_and_closes_session(self):
         fake_session = MagicMock()
         server_cursor = datetime.datetime(2026, 8, 27, 12, 0, tzinfo=datetime.timezone.utc)
@@ -169,6 +248,7 @@ class SyncServiceTests(unittest.TestCase):
             patch.object(sync_module, "init_db", return_value=fake_session),
             patch.object(sync_module, "get_server_sync_cursor", return_value=server_cursor),
             patch.object(sync_module, "get_sync_client_id", return_value="client-id"),
+            patch.object(sync_module, "sync_reference_data", return_value=True),
             patch.object(sync_module, "sync_to_server", return_value=True),
             patch.object(sync_module, "sync_from_server", return_value=True),
             patch.object(sync_module, "update_last_sync_time") as update_watermark,
