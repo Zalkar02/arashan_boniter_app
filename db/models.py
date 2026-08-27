@@ -123,12 +123,20 @@ class Owner(Base):
     owner_bool = Column(Boolean, default=False)  # текущий или нет
     date1 = Column(Date, default=datetime.date.today)
     date2 = Column(Date, nullable=True)
+    is_deleted = Column(Boolean, default=False)
 
     sheep = relationship("Sheep")
     owner = relationship("User")
 
     synced = Column(Boolean, default=False)
     updated_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+
+class SyncMetadata(Base):
+    __tablename__ = 'sync_metadata'
+
+    key = Column(String, primary_key=True)
+    value = Column(String, nullable=False)
 
 class Boniter(Base):
     __tablename__ = 'boniters'
@@ -245,6 +253,9 @@ def _ensure_local_columns(engine):
         },
         "lambs": {
             "created_by_user_id": "INTEGER",
+            "is_deleted": "BOOLEAN DEFAULT 0",
+        },
+        "owners": {
             "is_deleted": "BOOLEAN DEFAULT 0",
         },
     }
