@@ -7,4 +7,5 @@ PyQt5_sip==12.17.0
 qrcode==8.2
 reportlab==4.4.1
 requests==2.32.4
+chardet==5.2.0
 SQLAlchemy==2.0.42

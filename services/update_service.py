@@ -1,4 +1,5 @@
 import subprocess
+import sys
 from pathlib import Path
 
 
@@ -25,13 +26,20 @@ def _run_git(*args: str) -> str:
 
 def _python_bin() -> str:
     candidates = [
+        PROJECT_ROOT / ".venv" / "Scripts" / "python.exe",
+        PROJECT_ROOT / "env" / "Scripts" / "python.exe",
         PROJECT_ROOT / ".venv" / "bin" / "python",
         PROJECT_ROOT / "env" / "bin" / "python",
     ]
+    if not getattr(sys, "frozen", False):
+        candidates.append(Path(sys.executable))
     for candidate in candidates:
-        if candidate.exists():
+        if candidate.is_file():
             return str(candidate)
-    return "python3"
+    raise UpdateError(
+        "Не найден Python для применения обновления. "
+        "Запустите setup.ps1 и повторите попытку."
+    )
 
 
 def _run_python(*args: str) -> str:
@@ -72,10 +80,25 @@ def pull_updates():
     if status["dirty"]:
         raise UpdateError("Есть локальные изменения. Сначала закоммитьте или уберите их.")
     output = _run_git("pull", "origin", "main")
+    requirements_file = (
+        PROJECT_ROOT / "requirements-windows.txt"
+        if sys.platform == "win32"
+        else PROJECT_ROOT / "requirements.txt"
+    )
+    dependencies_output = ""
+    if requirements_file.is_file():
+        dependencies_output = _run_python(
+            "-m",
+            "pip",
+            "install",
+            "-r",
+            str(requirements_file),
+        )
     migrate_output = _run_python("migrate_local_db.py")
     refreshed = check_for_updates()
     return {
         "output": output,
+        "dependencies_output": dependencies_output,
         "migrate_output": migrate_output,
         "before": status,
         "after": refreshed,
