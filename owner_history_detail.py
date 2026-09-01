@@ -686,6 +686,15 @@ class OwnerHistoryDetailWindow(QMainWindow):
             return
 
         self.reload()
+        if payload.get("already_paid"):
+            QMessageBox.information(
+                self,
+                "Оплата",
+                "Выбранные овцы и бонитировки уже оплачены на сервере. "
+                "Локальные данные обновлены.",
+            )
+            return
+
         payment_token = payload.get("payment_token")
         reference = payload.get("reference") or "—"
         full_item_price = payload.get("unit_price", 0)

@@ -7,6 +7,7 @@ from services.auth_service import load_tokens, refresh_access_token
 CREATE_PAYMENT_URL = build_api_url("/api/payments/mkassa/dynamic-qr/")
 TOKEN_REFRESH_URL = build_api_url("/api/token/refresh/")
 CHECK_BY_ITEMS_STATUS_URL = build_api_url("/api/payments/mkassa/statuses/by-items/")
+ALREADY_PAID_MARKER = "уже оплачен"
 
 
 def _get_headers():
@@ -48,11 +49,11 @@ def _request_with_auth(method, url, **kwargs):
     return requests.request(method, url, headers=headers, **kwargs)
 
 
-def create_payment(session, selected_rows):
+def _collect_payment_items(selected_rows):
     sheep_ids = []
     application_ids = []
-    local_sheep = []
-    local_applications = []
+    sheep_by_remote_id = {}
+    applications_by_remote_id = {}
 
     for row in selected_rows:
         sheep = row["sheep"]
@@ -60,19 +61,50 @@ def create_payment(session, selected_rows):
         remote_id = getattr(sheep, "remote_id", None)
         include_sheep = not bool(getattr(sheep, "is_paid", False))
         if remote_id and include_sheep:
+            remote_id = int(remote_id)
             sheep_ids.append(remote_id)
-            local_sheep.append(sheep)
+            sheep_by_remote_id[remote_id] = sheep
         target_applications = row["applications"]
         if latest_application is not None:
             target_applications = [latest_application]
         for application in target_applications:
             app_remote_id = getattr(application, "remote_id", None)
             if app_remote_id and not bool(getattr(application, "is_paid", False)):
+                app_remote_id = int(app_remote_id)
                 application_ids.append(app_remote_id)
-                local_applications.append(application)
+                applications_by_remote_id[app_remote_id] = application
+
+    return {
+        "sheep_ids": sorted(set(sheep_ids)),
+        "application_ids": sorted(set(application_ids)),
+        "sheep_by_remote_id": sheep_by_remote_id,
+        "applications_by_remote_id": applications_by_remote_id,
+    }
+
+
+def _already_paid_result(status_summary=None):
+    status_summary = status_summary or {}
+    return {
+        "already_paid": True,
+        "quantity": 0,
+        "total_amount": 0,
+        "checked_items": status_summary.get("checked_items", 0),
+        "paid_items": status_summary.get("paid_items", 0),
+    }
+
+
+def create_payment(session, selected_rows):
+    # Reconcile local flags first. This prevents creating a second payment when
+    # another device has already completed it.
+    status_summary = _refresh_statuses_by_items(session, selected_rows)
+    session.commit()
+
+    payment_items = _collect_payment_items(selected_rows)
+    sheep_ids = payment_items["sheep_ids"]
+    application_ids = payment_items["application_ids"]
 
     if not sheep_ids and not application_ids:
-        raise RuntimeError("Для оплаты нет синхронизированных овец или бонитировок.")
+        return _already_paid_result(status_summary)
 
     response = _request_with_auth(
         "POST",
@@ -85,14 +117,30 @@ def create_payment(session, selected_rows):
     payload = _parse_json(response)
     if response.status_code != 201:
         detail = payload.get("detail") if isinstance(payload, dict) else response.text
+        if response.status_code == 400 and ALREADY_PAID_MARKER in str(detail).lower():
+            status_summary = _refresh_statuses_by_items(session, selected_rows)
+            session.commit()
+            return _already_paid_result(status_summary)
         raise RuntimeError(detail or "Не удалось создать оплату.")
 
     reference = payload.get("reference")
     payment_token = payload.get("payment_token")
-    for sheep in local_sheep:
+    already_paid_sheep_ids = _extract_id_set(payload, "already_paid_sheep_ids")
+    already_paid_application_ids = _extract_id_set(
+        payload,
+        "already_paid_application_ids",
+    )
+
+    for remote_id, sheep in payment_items["sheep_by_remote_id"].items():
+        if remote_id in already_paid_sheep_ids:
+            sheep.is_paid = True
+            continue
         sheep.payment_reference = reference
         sheep.payment_token = payment_token
-    for application in local_applications:
+    for remote_id, application in payment_items["applications_by_remote_id"].items():
+        if remote_id in already_paid_application_ids:
+            application.is_paid = True
+            continue
         application.payment_reference = reference
         application.payment_token = payment_token
     session.commit()
@@ -104,19 +152,19 @@ def refresh_payment_statuses(session, selected_rows):
     rows_without_reference = []
     for row in selected_rows:
         sheep = row["sheep"]
+        row_references = set()
         sheep_reference = getattr(sheep, "payment_reference", None)
         if sheep_reference:
-            references.setdefault(sheep_reference, []).append(row)
-            continue
-        has_reference = False
+            row_references.add(sheep_reference)
         for application in row["applications"]:
             app_reference = getattr(application, "payment_reference", None)
             if app_reference:
-                references.setdefault(app_reference, []).append(row)
-                has_reference = True
-                break
-        if not has_reference:
+                row_references.add(app_reference)
+        if not row_references:
             rows_without_reference.append(row)
+            continue
+        for reference in row_references:
+            references.setdefault(reference, []).append(row)
 
     if not references and not rows_without_reference:
         raise RuntimeError("У выбранных овец нет созданной оплаты.")
@@ -142,28 +190,26 @@ def refresh_payment_statuses(session, selected_rows):
         payment_token = payload.get("payment_token")
         for row in rows:
             sheep = row["sheep"]
-            sheep.payment_reference = reference
-            if payment_token:
+            if payment_token and getattr(sheep, "payment_reference", None) == reference:
                 sheep.payment_token = payment_token
-            if is_paid:
-                sheep.is_paid = True
             for application in row["applications"]:
-                application.payment_reference = reference
-                if payment_token:
+                if (
+                    payment_token
+                    and getattr(application, "payment_reference", None) == reference
+                ):
                     application.payment_token = payment_token
-                if is_paid:
-                    application.is_paid = True
 
         summary["used_reference_check"] = True
         summary["checked_references"] += 1
         if is_paid:
             summary["paid_references"] += 1
 
-    if rows_without_reference:
-        items_summary = _refresh_statuses_by_items(session, rows_without_reference)
-        summary["used_items_check"] = True
-        summary["checked_items"] += items_summary["checked_items"]
-        summary["paid_items"] += items_summary["paid_items"]
+    # A reference may cover only one repeat application, not every object in
+    # the displayed row. The by-items endpoint is authoritative for local flags.
+    items_summary = _refresh_statuses_by_items(session, selected_rows)
+    summary["used_items_check"] = True
+    summary["checked_items"] += items_summary["checked_items"]
+    summary["paid_items"] += items_summary["paid_items"]
 
     session.commit()
     return summary
