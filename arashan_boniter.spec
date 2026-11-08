@@ -9,10 +9,11 @@ datas = [
     ("styles/light_theme.qss", "styles"),
     ("assets/app_icon.svg", "assets"),
     ("assets/app_icon.ico", "assets"),
-    ("assets/passport_template/ewe_page1.png", "assets/passport_template"),
-    ("assets/passport_template/ewe_page2.png", "assets/passport_template"),
-    ("assets/passport_template/ram_page1.png", "assets/passport_template"),
-    ("assets/passport_template/ram_page2.png", "assets/passport_template"),
+    ("assets/DejaVuSans.ttf", "assets"),
+    ("assets/passport_template/back_page_baran.pdf", "assets/passport_template"),
+    ("assets/passport_template/back_page_matka.pdf", "assets/passport_template"),
+    ("assets/passport_template/face_page1_no_tables.pdf", "assets/passport_template"),
+    ("assets/passport_template/face_page1_no_tables_baran.pdf", "assets/passport_template"),
 ]
 
 

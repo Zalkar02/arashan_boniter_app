@@ -1,5 +1,6 @@
 import sys
 from PyQt5.QtWidgets import QApplication
+from PyQt5.QtCore import QTimer
 from PyQt5.QtGui import QIcon
 from auth_state import AuthState
 from api_config import build_api_url
@@ -7,7 +8,9 @@ from main_menu import MainMenu
 from resource_paths import resource_path
 from services.auth_service import load_user, restore_authenticated_session
 from services.db_service import get_db
+from services.desktop_integration import ensure_linux_desktop_entry
 from services.guest_records_service import claim_guest_records
+from update_ui import UpdateController
 
 
 def main():
@@ -38,6 +41,9 @@ def main():
     if w is None:
         w = MainMenu()
     w.show()
+    ensure_linux_desktop_entry()
+    w.update_controller = UpdateController(w)
+    QTimer.singleShot(2000, lambda: w.update_controller.check(silent=True))
     if claimed["sheep_count"] or claimed["application_count"]:
         w.statusBar().showMessage(
             f"Подтверждено локальных записей: овцы {claimed['sheep_count']}, бонитировки {claimed['application_count']}",

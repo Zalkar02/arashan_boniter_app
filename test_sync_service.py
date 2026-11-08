@@ -152,19 +152,27 @@ class SyncServiceTests(unittest.TestCase):
         self.assertEqual(sheep.boniter, boniter.id)
         self.assertEqual(application.boniter, boniter.id)
 
-    def test_blocked_dependency_error_identifies_record_and_relation(self):
+    def test_blocked_dependency_is_skipped_and_sync_continues(self):
         sheep = Sheep(id_n="missing-boniter", boniter=99, synced=False)
         self.session.add(sheep)
         self.session.commit()
 
-        with patch.object(sync_module, "UPLOAD_MODELS", [Sheep]):
-            with self.assertRaises(RuntimeError) as raised:
-                sync_module.sync_to_server(self.session, client_id="client-id")
+        with (
+            patch.object(sync_module, "UPLOAD_MODELS", [Sheep]),
+            patch.object(sync_module, "_log_conflict") as log_conflict,
+        ):
+            result = sync_module.sync_to_server(self.session, client_id="client-id")
 
-        message = str(raised.exception)
-        self.assertIn(f"локальная запись #{sheep.id}", message)
-        self.assertIn("бонитёр 99", message)
-        self.assertIn("локальная запись отсутствует", message)
+        self.assertTrue(result)
+        self.session.refresh(sheep)
+        self.assertFalse(sheep.synced)
+        self.assertIsNone(sheep.remote_id)
+        log_conflict.assert_called_once()
+        _, _, server_data, _ = log_conflict.call_args.args
+        self.assertEqual(server_data["reason"], "blocked")
+        self.assertIn(f"локальная запись #{sheep.id}", server_data["details"])
+        self.assertIn("бонитёр 99", server_data["details"])
+        self.assertIn("локальная запись отсутствует", server_data["details"])
 
     def test_owner_upload_uses_shared_sync_pipeline(self):
         scoped = {Color: []}
@@ -182,7 +190,7 @@ class SyncServiceTests(unittest.TestCase):
         self.assertIs(shared_sync.call_args.kwargs["candidates_by_model"], scoped)
         self.assertEqual(shared_sync.call_args.kwargs["client_id"], "client-id")
 
-    def test_download_does_not_overwrite_unsynced_local_record(self):
+    def test_download_skips_unsynced_local_record_and_continues(self):
         color = Color(name="Локальное название", remote_id=10, synced=False)
         self.session.add(color)
         self.session.commit()
@@ -201,14 +209,72 @@ class SyncServiceTests(unittest.TestCase):
                 "_request_with_auth",
                 return_value=FakeResponse(payload=payload),
             ),
-            patch.object(sync_module, "_log_conflict"),
+            patch.object(sync_module, "_log_conflict") as log_conflict,
         ):
-            with self.assertRaises(RuntimeError):
-                sync_module.sync_from_server(self.session)
+            result = sync_module.sync_from_server(self.session)
 
+        self.assertTrue(result)
         self.session.refresh(color)
         self.assertEqual(color.name, "Локальное название")
         self.assertFalse(color.synced)
+        log_conflict.assert_called_once()
+        model_name, local_id, server_data, _ = log_conflict.call_args.args
+        self.assertEqual(model_name, "color")
+        self.assertEqual(local_id, color.id)
+        self.assertEqual(server_data["name"], "Серверное название")
+
+    def test_deleted_record_conflict_is_skipped_and_sync_continues(self):
+        sheep = Sheep(id_n="del-conflict", remote_id=5, synced=False)
+        self.session.add(sheep)
+        self.session.commit()
+
+        payload = {
+            "results": [
+                {
+                    "model_name": "sheep",
+                    "remote_id": 5,
+                    "deleted_at": "2026-08-27T12:00:00+00:00",
+                }
+            ],
+            "next": None,
+            "count": 1,
+        }
+        with (
+            patch.object(sync_module, "DOWNLOAD_MODELS", []),
+            patch.object(sync_module, "get_last_sync_time", return_value=datetime.datetime(2000, 1, 1)),
+            patch.object(sync_module, "_request_with_auth", return_value=FakeResponse(payload=payload)),
+            patch.object(sync_module, "_log_conflict") as log_conflict,
+        ):
+            result = sync_module.sync_from_server(self.session)
+
+        self.assertTrue(result)
+        self.session.refresh(sheep)
+        self.assertFalse(sheep.is_deleted)
+        self.assertFalse(sheep.synced)
+        log_conflict.assert_called_once()
+
+    def test_token_refresh_retry_keeps_custom_headers(self):
+        ok = FakeResponse(payload=[])
+        unauthorized = FakeResponse(status_code=401)
+        request = MagicMock(side_effect=[unauthorized, ok])
+        with (
+            patch.object(sync_module, "load_tokens", return_value={"access": "old-token"}),
+            patch.object(sync_module, "refresh_access_token", return_value="new-token"),
+            patch.object(sync_module.requests, "request", request),
+        ):
+            response = sync_module._request_with_auth(
+                "GET",
+                "https://example.test/sync",
+                headers={"X-Custom": "1"},
+            )
+
+        self.assertIs(response, ok)
+        second_call = request.call_args_list[1]
+        self.assertEqual(second_call.kwargs["headers"]["X-Custom"], "1")
+        self.assertEqual(
+            second_call.kwargs["headers"]["Authorization"],
+            "Bearer new-token",
+        )
 
     def test_sheep_parent_can_arrive_on_a_later_page(self):
         responses = [

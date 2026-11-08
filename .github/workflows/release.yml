@@ -1,0 +1,88 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+env:
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Check tag matches version.py
+        run: |
+          test "v$(python -c 'from version import __version__; print(__version__)')" = "${GITHUB_REF_NAME}"
+      - name: System libraries for Qt
+        run: sudo apt-get update && sudo apt-get install -y libxcb-xinerama0 libxkbcommon-x11-0 libgl1 libfuse2
+      - name: Build AppImage
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install -r requirements.txt
+          packaging/build_appimage.sh .venv/bin/python
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: dist/*.AppImage
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Build installer
+        shell: pwsh
+        run: |
+          $version = python -c "from version import __version__; print(__version__)"
+          if ("v$version" -ne $env:GITHUB_REF_NAME) { throw "Tag does not match version.py" }
+          pip install -r requirements-windows.txt pyinstaller
+          pyinstaller --noconfirm arashan_boniter.spec
+          choco install innosetup -y --no-progress
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=$version" packaging\arashan.iss
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/ArashanBoniter-Setup-*.exe
+
+  publish:
+    needs: [linux, windows]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Build manifest and upload to S3
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.S3_ACCESS_KEY }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.S3_SECRET_KEY }}
+          AWS_DEFAULT_REGION: ${{ secrets.S3_REGION }}
+          AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+          AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
+          S3_ENDPOINT: ${{ secrets.S3_ENDPOINT }}
+          S3_BUCKET: ${{ secrets.S3_BUCKET }}
+          PUBLIC_BASE_URL: ${{ secrets.UPDATE_BASE_URL }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          NOTES="$(git tag -l --format='%(contents)' "${GITHUB_REF_NAME}")"
+          WIN="$(ls artifacts/windows/*.exe)"
+          LIN="$(ls artifacts/linux/*.AppImage)"
+          python3 tools/make_manifest.py \
+            --version "$VERSION" \
+            --min-version "$(tr -d '[:space:]' < MIN_SUPPORTED_VERSION)" \
+            --base-url "$PUBLIC_BASE_URL" \
+            --notes "$NOTES" \
+            --windows "$WIN" --linux "$LIN" > manifest.json
+          cat manifest.json
+          # Сначала файлы, манифест последним: клиенты не увидят версию без файлов.
+          aws s3 cp "$WIN" "s3://$S3_BUCKET/" --endpoint-url "$S3_ENDPOINT"
+          aws s3 cp "$LIN" "s3://$S3_BUCKET/" --endpoint-url "$S3_ENDPOINT"
+          aws s3 cp manifest.json "s3://$S3_BUCKET/manifest.json" --endpoint-url "$S3_ENDPOINT" \
+            --content-type application/json --cache-control "no-cache"

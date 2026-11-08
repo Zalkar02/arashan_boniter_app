@@ -3,7 +3,7 @@ import os
 
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QMessageBox, QProgressDialog, QComboBox, QApplication, QFileDialog
+    QMessageBox, QProgressDialog, QComboBox, QFileDialog
 )
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QPalette, QColor, QKeySequence
@@ -22,8 +22,9 @@ from services.passport_print_service import (
     save_selected_printer,
 )
 from services.sync_worker import SyncWorker
-from services.update_worker import UpdateWorker
 from services.user_context_service import get_current_user_name
+from update_ui import UpdateController
+from version import __version__
 
 
 class SettingsWindow(QMainWindow):
@@ -32,8 +33,6 @@ class SettingsWindow(QMainWindow):
         self._suppress_restore = False
         self.sync_worker = None
         self.sync_dialog = None
-        self.update_worker = None
-        self.update_dialog = None
         self.setWindowTitle("Настройки")
         self.resize(800, 600)
 
@@ -108,14 +107,17 @@ class SettingsWindow(QMainWindow):
 
         update_row = QHBoxLayout()
         self.btn_check_updates = QPushButton("Проверить обновления")
-        self.btn_pull_updates = QPushButton("Обновить приложение")
         update_row.addWidget(self.btn_check_updates)
-        update_row.addWidget(self.btn_pull_updates)
         update_row.addStretch(1)
         v.addLayout(update_row)
 
-        self.lbl_update_status = QLabel("Обновления не проверялись.")
+        self.lbl_update_status = QLabel(f"Версия {__version__}.")
         v.addWidget(self.lbl_update_status)
+        self.update_controller = UpdateController(self)
+        self.update_controller.status_changed.connect(self.lbl_update_status.setText)
+        self.update_controller.busy_changed.connect(
+            lambda busy: self.btn_check_updates.setEnabled(not busy)
+        )
 
         row = QHBoxLayout()
         self.btn_sync = QPushButton("Синхронизация")
@@ -137,8 +139,9 @@ class SettingsWindow(QMainWindow):
         self.cmb_printer.currentIndexChanged.connect(self._save_printer_selection)
         self.cmb_print_batch.currentIndexChanged.connect(self._save_print_batch_size)
         self.cmb_back_order.currentIndexChanged.connect(self._save_back_print_order)
-        self.btn_check_updates.clicked.connect(self._check_updates)
-        self.btn_pull_updates.clicked.connect(self._pull_updates)
+        self.btn_check_updates.clicked.connect(
+            lambda: self.update_controller.check(silent=False)
+        )
 
         self._load_printers()
         self._load_pdf_app_path()
@@ -282,77 +285,6 @@ class SettingsWindow(QMainWindow):
         QMessageBox.information(self, "Синхронизация", "Синхронизация завершена.")
         self.sync_worker = None
 
-    def _start_update_worker(self, mode: str, title: str, label: str):
-        if self.update_worker is not None and self.update_worker.isRunning():
-            return
-        self.update_worker = UpdateWorker(mode, self)
-        self.update_worker.finished_ok.connect(self._on_update_finished)
-        self.update_worker.failed.connect(self._on_update_failed)
-        self.btn_check_updates.setEnabled(False)
-        self.btn_pull_updates.setEnabled(False)
-        self.update_dialog = QProgressDialog(label, None, 0, 0, self)
-        self.update_dialog.setWindowTitle(title)
-        self.update_dialog.setWindowModality(Qt.WindowModal)
-        self.update_dialog.setMinimumDuration(0)
-        self.update_dialog.setAutoClose(False)
-        self.update_dialog.setAutoReset(False)
-        self.update_dialog.show()
-        self.update_worker.start()
-
-    def _check_updates(self):
-        self._start_update_worker("check", "Проверка обновлений", "Проверяем обновления из main...")
-
-    def _pull_updates(self):
-        self._start_update_worker("pull", "Обновление приложения", "Загружаем обновления из main...")
-
-    def _on_update_finished(self, result: dict):
-        mode = self.update_worker.mode if self.update_worker is not None else "check"
-        self.btn_check_updates.setEnabled(True)
-        self.btn_pull_updates.setEnabled(True)
-        if self.update_dialog is not None:
-            self.update_dialog.close()
-            self.update_dialog = None
-
-        if mode == "pull":
-            after = result.get("after") or {}
-            self.lbl_update_status.setText(
-                f"Обновление завершено. Ветка: {after.get('branch', '—')}, новых коммитов впереди нет."
-            )
-            QMessageBox.information(
-                self,
-                "Обновление",
-                "Обновление загружено из main.\nПерезапустите приложение, чтобы применить изменения.",
-            )
-            app = QApplication.instance()
-            if app is not None:
-                app.quit()
-        else:
-            branch = result.get("branch", "—")
-            behind = result.get("behind", 0)
-            ahead = result.get("ahead", 0)
-            dirty = result.get("dirty", False)
-            if result.get("has_updates"):
-                text = f"Есть обновления: {behind} коммит(ов) в main. Текущая ветка: {branch}."
-            else:
-                text = f"Обновлений нет. Текущая ветка: {branch}."
-            if ahead:
-                text += f" Локально впереди на {ahead} коммит(ов)."
-            if dirty:
-                text += " Есть локальные изменения."
-            self.lbl_update_status.setText(text)
-            QMessageBox.information(self, "Обновления", text)
-        self.update_worker = None
-
-    def _on_update_failed(self, message: str):
-        self.btn_check_updates.setEnabled(True)
-        self.btn_pull_updates.setEnabled(True)
-        if self.update_dialog is not None:
-            self.update_dialog.close()
-            self.update_dialog = None
-        self.lbl_update_status.setText("Не удалось проверить или загрузить обновления.")
-        QMessageBox.warning(self, "Обновления", message)
-        self.update_worker = None
-
     def _on_sync_cancelled(self):
         self.btn_sync.setEnabled(True)
         self.btn_sync.setText("Продолжить синхронизацию")
@@ -378,7 +310,7 @@ class SettingsWindow(QMainWindow):
             QMessageBox.information(self, "Синхронизация", "Дождитесь завершения синхронизации.")
             ev.ignore()
             return
-        if self.update_worker is not None and self.update_worker.isRunning():
+        if self.update_controller.is_busy():
             QMessageBox.information(self, "Обновления", "Дождитесь завершения проверки или обновления.")
             ev.ignore()
             return

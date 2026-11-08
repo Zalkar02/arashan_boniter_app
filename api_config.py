@@ -39,6 +39,11 @@ _load_env_file()
 
 API_HOST = os.getenv("API_HOST", "https://arashan.zet.kg").rstrip("/")
 
+# Публичный адрес бакета S3 с manifest.json и установщиками (без слэша в конце).
+UPDATE_BASE_URL = os.getenv(
+    "UPDATE_BASE_URL", "https://fmh8q.upcloudobjects.com/Arashan-app-reeles"
+).rstrip("/")
+
 
 def build_api_url(path: str) -> str:
     normalized = path if path.startswith("/") else f"/{path}"

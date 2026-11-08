@@ -120,7 +120,8 @@ def _get_headers():
 
 def _request_with_auth(method, url, **kwargs):
     kwargs.setdefault("timeout", SYNC_REQUEST_TIMEOUT)
-    headers = dict(kwargs.pop("headers", {}) or {})
+    extra_headers = dict(kwargs.pop("headers", {}) or {})
+    headers = dict(extra_headers)
     headers.update(_get_headers())
     response = requests.request(method, url, headers=headers, **kwargs)
     if not _should_refresh_token(response):
@@ -131,7 +132,7 @@ def _request_with_auth(method, url, **kwargs):
     except Exception as exc:
         raise RuntimeError(f"Failed to refresh sync token: {exc}") from exc
 
-    headers = dict(kwargs.pop("headers", {}) or {})
+    headers = dict(extra_headers)
     headers.update(HEADERS)
     headers["Authorization"] = f"Bearer {access}"
     return requests.request(method, url, headers=headers, **kwargs)
@@ -255,6 +256,28 @@ def serialize(obj):
     return data
 
 
+def _label_to_code(value, labels: dict):
+    """Приводит значение справочника (код или название) к коду, иначе None."""
+    value = str(value or "").strip()
+    if not value:
+        return None
+    if value in labels:
+        return value
+    key = value.casefold()
+    for code, label in labels.items():
+        label_key = label.casefold()
+        if key == label_key or f"{key} район" == label_key:
+            return code
+    return None
+
+
+KURDYK_FORM_CODES = {
+    "raised": "raised", "medium": "medium", "lowered": "lowered",
+    "приподнятый": "raised", "средний": "medium",
+    "приспущенный": "lowered", "опущенный": "lowered",
+}
+
+
 def _prepare_outgoing_payload(session: Session, model, data: dict):
     outgoing = dict(data)
     outgoing.pop("created_by_user_id", None)
@@ -264,7 +287,14 @@ def _prepare_outgoing_payload(session: Session, model, data: dict):
         if not password:
             outgoing.pop("password", None)
         outgoing.pop("name_norm", None)
+        from services.owner_search_service import AREA_LABELS, REGION_LABELS
+        for key, labels in (("region", REGION_LABELS), ("area", AREA_LABELS)):
+            if key in outgoing:
+                outgoing[key] = _label_to_code(outgoing[key], labels)
     elif model in (Sheep, Application):
+        if model is Application and "kurdyk_form" in outgoing:
+            raw = str(outgoing["kurdyk_form"] or "").strip().casefold()
+            outgoing["kurdyk_form"] = KURDYK_FORM_CODES.get(raw)
         outgoing.pop("payment_reference", None)
         outgoing.pop("payment_token", None)
         outgoing.pop("is_printed", None)
@@ -472,9 +502,7 @@ def _load_missing_sheep_parents(session: Session, pending_items, progress_cb=Non
                 if local is not None:
                     if not bool(local.synced):
                         _log_conflict("sheep", local.id, item, serialize(local))
-                        raise RuntimeError(
-                            f"Конфликт овцы: локальная запись {local.id} ещё не отправлена"
-                        )
+                        continue
                     for key, value in clean_item.items():
                         setattr(local, key, value)
                 else:
@@ -695,6 +723,7 @@ def _apply_deleted_records(
 ):
     processed = 0
     total_count = 0
+    skipped_conflicts = 0
     url = f"{BASE_URL}/deleted-records/"
     params = {
         "deleted_after": last_sync.isoformat(),
@@ -732,22 +761,23 @@ def _apply_deleted_records(
                     item,
                     serialize(local),
                 )
-                raise RuntimeError(
-                    f"Конфликт удаления {item.get('model_name')} #{remote_id}: "
-                    "локальная запись ещё не отправлена."
-                )
+                skipped_conflicts += 1
+                continue
             local.is_deleted = True
             if hasattr(local, "synced"):
                 local.synced = True
         session.commit()
         processed += len(items)
+        message = f"Удаления: {processed} / {total_count or processed}"
+        if skipped_conflicts:
+            message += f"; пропущено конфликтов: {skipped_conflicts}"
         _emit_progress(
             progress_cb,
             "download",
             "deleted",
             processed,
             total_count or processed,
-            f"Удаления: {processed} / {total_count or processed}",
+            message,
         )
 
         if isinstance(payload, dict):
@@ -808,11 +838,14 @@ def _sync_models_to_server(
         if not ready:
             message = f"{label}: 0 / 0"
             if blocked:
-                message = f"Ожидание зависимостей для {len(blocked)} записей"
+                message = f"Пропущено {len(blocked)} записей: не готовы зависимости"
+                _log_conflict(
+                    model_name,
+                    "",
+                    {"reason": "blocked", "details": _format_blocked_dependencies(session, model, blocked)},
+                    {},
+                )
             _emit_progress(progress_cb, "upload", model_name, 0, 0, message)
-            if blocked:
-                details = _format_blocked_dependencies(session, model, blocked)
-                raise RuntimeError(f"{label}: не готовы зависимости. {details}")
             continue
 
         url = f"{BASE_URL}/{model_name}/post/"
@@ -852,8 +885,15 @@ def _sync_models_to_server(
                 f"{label}: {processed} / {total}",
             )
             if unresolved_ids:
-                unresolved = ", ".join(str(value) for value in unresolved_ids)
-                raise RuntimeError(f"Не разрешены конфликты {label}: {unresolved}")
+                _log_conflict(
+                    model_name,
+                    "",
+                    {
+                        "reason": "unresolved_conflict",
+                        "local_ids": sorted(unresolved_ids),
+                    },
+                    {},
+                )
 
         if model is Sheep:
             remaining = [obj for obj in ready if obj.id not in processed_ids]
@@ -864,10 +904,16 @@ def _sync_models_to_server(
                     model_name,
                     processed,
                     total,
-                    f"Ожидание родителей для {len(remaining)} овец",
+                    f"Пропущено {len(remaining)} овец: ждут синхронизации родителей",
                 )
-                raise RuntimeError(
-                    f"Для {len(remaining)} овец сначала нужно синхронизировать родителей."
+                _log_conflict(
+                    model_name,
+                    "",
+                    {
+                        "reason": "waiting_parents",
+                        "local_ids": sorted(obj.id for obj in remaining),
+                    },
+                    {},
                 )
         if blocked:
             _emit_progress(
@@ -875,11 +921,15 @@ def _sync_models_to_server(
                 "upload",
                 model_name,
                 processed,
-                total + len(blocked),
-                f"Ожидание зависимостей для {len(blocked)} записей",
+                total,
+                f"Пропущено {len(blocked)} записей: не готовы зависимости",
             )
-            details = _format_blocked_dependencies(session, model, blocked)
-            raise RuntimeError(f"{label}: не готовы зависимости. {details}")
+            _log_conflict(
+                model_name,
+                "",
+                {"reason": "blocked", "details": _format_blocked_dependencies(session, model, blocked)},
+                {},
+            )
     return True
 
 
@@ -916,6 +966,7 @@ def sync_from_server(session: Session, sync_until=None, progress_cb=None, should
         name = MODEL_NAMES[model]
         processed = 0
         total_count = 0
+        skipped_conflicts = 0
         pending_sheep_parents = []
         url = f"{BASE_URL}/{name}/"
         if model is Color:
@@ -955,14 +1006,17 @@ def sync_from_server(session: Session, sync_until=None, progress_cb=None, should
                     username = clean_item.get("username")
                     if username:
                         local = session.query(User).filter_by(username=username).first()
+                if local is None and model is Sheep:
+                    id_n = clean_item.get("id_n")
+                    if id_n:
+                        local = session.query(Sheep).filter_by(id_n=id_n).first()
+                        if local is not None and not getattr(local, "remote_id", None):
+                            local.remote_id = remote_id
                 if local:
                     if hasattr(local, "synced") and not bool(local.synced):
                         _log_conflict(name, local.id, item, serialize(local))
-                        raise RuntimeError(
-                            f"Конфликт {MODEL_LABELS.get(name, name)}: "
-                            f"локальная запись {local.id} ещё не отправлена, "
-                            "поэтому данные сервера не применены"
-                        )
+                        skipped_conflicts += 1
+                        continue
                     for k, v in clean_item.items():
                         if k == "id":
                             continue
@@ -998,13 +1052,16 @@ def sync_from_server(session: Session, sync_until=None, progress_cb=None, should
                 session.commit()
                 pending_sheep_parents = unresolved_parents
             processed += len(items)
+            message = f"{MODEL_LABELS.get(name, name)}: {processed} / {total_count or processed}"
+            if skipped_conflicts:
+                message += f"; пропущено конфликтов: {skipped_conflicts}"
             _emit_progress(
                 progress_cb,
                 "download",
                 name,
                 processed,
                 total_count or processed,
-                f"{MODEL_LABELS.get(name, name)}: {processed} / {total_count or processed}",
+                message,
             )
 
             if isinstance(payload, dict):
