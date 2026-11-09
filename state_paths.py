@@ -4,12 +4,18 @@ import sys
 
 
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
-if getattr(sys, "frozen", False):
+
+
+def installed_state_home() -> str:
+    """Папка данных установленного приложения (вне папки программы)."""
     if sys.platform == "win32":
-        _base = os.environ.get("LOCALAPPDATA") or os.path.join(os.path.expanduser("~"), "AppData", "Local")
-        APP_STATE_HOME = os.path.join(_base, "ArashanBoniter")
-    else:
-        APP_STATE_HOME = os.path.join(os.path.expanduser("~"), ".local", "share", "arashan-boniter")
+        base = os.environ.get("LOCALAPPDATA") or os.path.join(os.path.expanduser("~"), "AppData", "Local")
+        return os.path.join(base, "ArashanBoniter")
+    return os.path.join(os.path.expanduser("~"), ".local", "share", "arashan-boniter")
+
+
+if getattr(sys, "frozen", False):
+    APP_STATE_HOME = installed_state_home()
 else:
     APP_STATE_HOME = PROJECT_ROOT
 

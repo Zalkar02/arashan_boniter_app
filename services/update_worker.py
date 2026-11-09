@@ -1,5 +1,6 @@
 from PyQt5.QtCore import QThread, pyqtSignal
 
+from services import legacy_migration
 from services.update_service import apply_update, check_for_updates, download_update
 
 
@@ -19,6 +20,11 @@ class UpdateWorker(QThread):
                 path = download_update(self.info, progress=self.progress.emit)
                 apply_update(path)
                 result = {"installed": True}
+            elif self.mode == "legacy_install":
+                legacy_migration.migrate(self.info, progress=self.progress.emit)
+                result = {"installed": True}
+            elif self.mode == "legacy_check":
+                result = legacy_migration.check()
             else:
                 result = check_for_updates()
         except Exception as exc:

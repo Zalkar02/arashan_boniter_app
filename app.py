@@ -6,6 +6,7 @@ from auth_state import AuthState
 from api_config import build_api_url
 from main_menu import MainMenu
 from resource_paths import resource_path
+from services import legacy_migration
 from services.auth_service import load_user, restore_authenticated_session
 from services.db_service import get_db
 from services.desktop_integration import ensure_linux_desktop_entry
@@ -14,6 +15,9 @@ from update_ui import UpdateController
 
 
 def main():
+    # Старый ярлык после перехода на установленное приложение: открываем его.
+    if legacy_migration.redirect_to_installed():
+        return
     app = QApplication(sys.argv)
     icon_file = "app_icon.ico" if sys.platform.startswith("win") else "app_icon.svg"
     icon_path = resource_path("assets", icon_file)

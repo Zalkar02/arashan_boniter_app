@@ -16,7 +16,9 @@ rm -rf build/AppDir dist/ArashanBoniter
 
 mkdir -p "$APPDIR/usr/lib"
 cp -R dist/ArashanBoniter "$APPDIR/usr/lib/ArashanBoniter"
-cp assets/app_icon.svg "$APPDIR/arashan-boniter.svg"
+# appimagetool требует PNG в .DirIcon.
+cp assets/app_icon.png "$APPDIR/arashan-boniter.png"
+cp assets/app_icon.png "$APPDIR/.DirIcon"
 
 cat > "$APPDIR/arashan-boniter.desktop" <<DESKTOP
 [Desktop Entry]

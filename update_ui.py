@@ -1,6 +1,7 @@
 from PyQt5.QtCore import QObject, Qt, pyqtSignal
 from PyQt5.QtWidgets import QApplication, QMessageBox, QProgressDialog
 
+from services import legacy_migration
 from services.update_service import can_self_update
 from services.update_worker import UpdateWorker
 
@@ -27,7 +28,8 @@ class UpdateController(QObject):
             return
         self.silent = silent
         self.status_changed.emit("Проверяем обновления...")
-        self._start(UpdateWorker("check", parent=self), self._on_checked)
+        mode = "legacy_check" if legacy_migration.is_legacy_checkout() else "check"
+        self._start(UpdateWorker(mode, parent=self), self._on_checked)
 
     def _start(self, worker, on_ok):
         self.worker = worker
@@ -42,6 +44,9 @@ class UpdateController(QObject):
 
     def _on_checked(self, info: dict):
         self._finish_worker()
+        if info.get("legacy"):
+            self._prompt_legacy(info)
+            return
         current = info["current_version"]
         latest = info["latest_version"]
         if not info["has_updates"]:
@@ -81,7 +86,25 @@ class UpdateController(QObject):
         elif info["required"]:
             QApplication.quit()
 
-    def _install(self, info: dict):
+    def _prompt_legacy(self, info: dict):
+        self.required = False
+        self.status_changed.emit(f"Доступна установочная версия {info['latest_version']}.")
+        box = QMessageBox(self.widget)
+        box.setWindowTitle("Новая версия приложения")
+        box.setIcon(QMessageBox.Information)
+        box.setText(
+            f"Доступна версия {info['latest_version']}. Она устанавливается как обычная программа "
+            "и дальше обновляется сама одной кнопкой.\n\n"
+            "Ваши данные (база, вход, настройки печати) будут перенесены. "
+            "Старая папка программы останется как резервная копия."
+        )
+        install_btn = box.addButton("Перейти сейчас", QMessageBox.AcceptRole)
+        box.addButton("Позже", QMessageBox.RejectRole)
+        box.exec_()
+        if box.clickedButton() is install_btn:
+            self._install(info, mode="legacy_install")
+
+    def _install(self, info: dict, mode: str = "install"):
         self.dialog = QProgressDialog("Скачиваем обновление...", None, 0, 100, self.widget)
         self.dialog.setWindowTitle("Обновление")
         self.dialog.setWindowModality(Qt.WindowModal)
@@ -90,7 +113,7 @@ class UpdateController(QObject):
         self.dialog.setAutoReset(False)
         self.dialog.setValue(0)
         self.dialog.show()
-        worker = UpdateWorker("install", info, self)
+        worker = UpdateWorker(mode, info, self)
         worker.progress.connect(self._on_progress)
         self._start(worker, self._on_installed)
 

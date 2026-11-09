@@ -93,3 +93,6 @@ Desktop.ini
 media/
 site/
 .ipynb_checkpoints/
+
+# Метка перехода со старой установки на установленное приложение
+.migrated_to_installed.json
