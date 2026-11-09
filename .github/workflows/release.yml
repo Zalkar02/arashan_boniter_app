@@ -71,6 +71,8 @@ jobs:
           PUBLIC_BASE_URL: ${{ secrets.UPDATE_BASE_URL }}
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
+          # checkout приносит тег без аннотации; без этого в notes попадает сообщение коммита.
+          git fetch --force origin "refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}"
           NOTES="$(git tag -l --format='%(contents)' "${GITHUB_REF_NAME}")"
           WIN="$(ls artifacts/windows/*.exe)"
           LIN="$(ls artifacts/linux/*.AppImage)"
