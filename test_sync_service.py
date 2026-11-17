@@ -306,6 +306,67 @@ class SyncServiceTests(unittest.TestCase):
         self.assertTrue(result)
         self.assertEqual([parent.remote_id for parent in child.parents], [2])
 
+    def _download_sheep(self, items):
+        response = FakeResponse(payload={"results": items, "next": None, "count": len(items)})
+        with (
+            patch.object(sync_module, "DOWNLOAD_MODELS", [Sheep]),
+            patch.object(sync_module, "get_last_sync_time", return_value=datetime.datetime(2000, 1, 1)),
+            patch.object(sync_module, "_apply_deleted_records", return_value=True),
+            patch.object(sync_module, "_request_with_auth", return_value=response),
+            patch.object(sync_module, "_log_conflict"),
+        ):
+            return sync_module.sync_from_server(self.session)
+
+    def test_downloaded_id_n_swap_does_not_violate_unique(self):
+        first = Sheep(id_n="A", remote_id=1, synced=True)
+        second = Sheep(id_n="B", remote_id=2, synced=True)
+        self.session.add_all([first, second])
+        self.session.commit()
+
+        self._download_sheep([
+            {"id": 1, "id_n": "B", "parent": []},
+            {"id": 2, "id_n": "A", "parent": []},
+        ])
+
+        self.assertEqual(self.session.query(Sheep).filter_by(remote_id=1).one().id_n, "B")
+        self.assertEqual(self.session.query(Sheep).filter_by(remote_id=2).one().id_n, "A")
+
+    def test_downloaded_id_n_taken_by_deleted_sheep_is_released(self):
+        stale = Sheep(id_n="X", remote_id=7, synced=True, is_deleted=True)
+        target = Sheep(id_n="old", remote_id=8, synced=True)
+        self.session.add_all([stale, target])
+        self.session.commit()
+
+        self._download_sheep([{"id": 8, "id_n": "X", "parent": []}])
+
+        self.session.refresh(stale)
+        self.assertIsNone(stale.id_n)
+        self.assertEqual(self.session.query(Sheep).filter_by(remote_id=8).one().id_n, "X")
+
+    def test_new_server_sheep_does_not_merge_into_other_remote_sheep(self):
+        stale = Sheep(id_n="X", remote_id=7, synced=True)
+        self.session.add(stale)
+        self.session.commit()
+
+        self._download_sheep([{"id": 9, "id_n": "X", "parent": []}])
+
+        self.session.refresh(stale)
+        self.assertEqual(stale.remote_id, 7)
+        self.assertIsNone(stale.id_n)
+        self.assertEqual(self.session.query(Sheep).filter_by(remote_id=9).one().id_n, "X")
+
+    def test_downloaded_id_n_taken_by_unsynced_local_sheep_is_skipped(self):
+        local = Sheep(id_n="X", remote_id=7, synced=False)
+        target = Sheep(id_n="old", remote_id=8, synced=True)
+        self.session.add_all([local, target])
+        self.session.commit()
+
+        self.assertTrue(self._download_sheep([{"id": 8, "id_n": "X", "parent": []}]))
+
+        self.session.refresh(local)
+        self.assertEqual(local.id_n, "X")
+        self.assertEqual(self.session.query(Sheep).filter_by(remote_id=8).one().id_n, "old")
+
     def test_missing_sheep_parent_is_downloaded_by_id(self):
         responses = [
             FakeResponse(

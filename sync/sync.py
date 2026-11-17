@@ -440,6 +440,43 @@ def _extract_sheep_parent_ids(session: Session, item: dict):
     return parent_ids
 
 
+def _release_sheep_id_n(session: Session, id_n, keep_local_id, server_item) -> bool:
+    """Free a unique id_n held by another local sheep before applying server data.
+
+    The server keeps id_n unique, so a different local row holding the same number
+    is a stale copy (renumbered or deleted on the server); its fresh data arrives in
+    the same or a later sync. A not-yet-uploaded local sheep is a real conflict:
+    the server item is skipped and logged.
+    """
+    if not id_n:
+        return True
+    query = session.query(Sheep).filter(Sheep.id_n == id_n)
+    if keep_local_id is not None:
+        query = query.filter(Sheep.id != keep_local_id)
+    holders = query.all()
+    if not holders:
+        return True
+    for holder in holders:
+        if not bool(holder.synced) and not bool(holder.is_deleted):
+            _log_conflict(
+                "sheep",
+                holder.id,
+                {"reason": "id_n_taken", "server": server_item},
+                serialize(holder),
+            )
+            return False
+    for holder in holders:
+        _log_conflict(
+            "sheep",
+            holder.id,
+            {"reason": "id_n_released", "server": server_item},
+            serialize(holder),
+        )
+        holder.id_n = None
+    session.flush()
+    return True
+
+
 def _load_missing_sheep_parents(session: Session, pending_items, progress_cb=None, should_stop=None):
     """Download parents omitted from the incremental sheep response, including ancestors."""
     pending_by_remote_id = {
@@ -499,10 +536,17 @@ def _load_missing_sheep_parents(session: Session, pending_items, progress_cb=Non
                 received_ids.add(remote_id)
                 clean_item = _normalize_item(session, Sheep, item)
                 local = session.query(Sheep).filter_by(remote_id=remote_id).first()
+                if local is not None and not bool(local.synced):
+                    _log_conflict("sheep", local.id, item, serialize(local))
+                    continue
+                if not _release_sheep_id_n(
+                    session,
+                    clean_item.get("id_n"),
+                    local.id if local is not None else None,
+                    item,
+                ):
+                    continue
                 if local is not None:
-                    if not bool(local.synced):
-                        _log_conflict("sheep", local.id, item, serialize(local))
-                        continue
                     for key, value in clean_item.items():
                         setattr(local, key, value)
                 else:
@@ -1009,14 +1053,25 @@ def sync_from_server(session: Session, sync_until=None, progress_cb=None, should
                 if local is None and model is Sheep:
                     id_n = clean_item.get("id_n")
                     if id_n:
-                        local = session.query(Sheep).filter_by(id_n=id_n).first()
-                        if local is not None and not getattr(local, "remote_id", None):
+                        # Only adopt a local sheep that was never linked to the server;
+                        # one with another remote_id is a stale copy of a different sheep.
+                        local = session.query(Sheep).filter_by(id_n=id_n, remote_id=None).first()
+                        if local is not None:
                             local.remote_id = remote_id
                 if local:
                     if hasattr(local, "synced") and not bool(local.synced):
                         _log_conflict(name, local.id, item, serialize(local))
                         skipped_conflicts += 1
                         continue
+                if model is Sheep and not _release_sheep_id_n(
+                    session,
+                    clean_item.get("id_n"),
+                    local.id if local else None,
+                    item,
+                ):
+                    skipped_conflicts += 1
+                    continue
+                if local:
                     for k, v in clean_item.items():
                         if k == "id":
                             continue
