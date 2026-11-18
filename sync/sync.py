@@ -1,4 +1,5 @@
 import os
+import threading
 import json
 import requests
 import datetime
@@ -24,7 +25,10 @@ HEADERS = {
 LAST_SYNC_FILE = os.path.join(APP_STATE_HOME, "last_sync.txt")
 CONFLICT_POLICY = "server-wins"  # варианты: server-wins | client-wins | manual
 CONFLICT_LOG = os.path.join(APP_STATE_HOME, "sync_conflicts.jsonl")
-SYNC_BATCH_SIZE = int(os.getenv("SYNC_BATCH_SIZE", "100"))
+# Загрузка с сервера: сервер отдаёт до 500 записей за запрос (MAX_SYNC_LIMIT в Django).
+SYNC_BATCH_SIZE = int(os.getenv("SYNC_BATCH_SIZE", "500"))
+# Отправка на сервер: каждая пачка пишется одной транзакцией, держим её небольшой.
+SYNC_UPLOAD_BATCH_SIZE = int(os.getenv("SYNC_UPLOAD_BATCH_SIZE", "100"))
 SYNC_REQUEST_TIMEOUT = float(os.getenv("SYNC_REQUEST_TIMEOUT", "30"))
 SYNC_CLIENT_KEY = "sync_client_id"
 UPLOAD_MODELS = [Color, User, Sheep, Lamb, Application, Owner]
@@ -118,12 +122,24 @@ def _get_headers():
     return headers
 
 
+_http_local = threading.local()
+
+
+def _http_session():
+    """Одно HTTPS-соединение на поток: без keep-alive каждый запрос заново делал TLS (~0,3 с)."""
+    session = getattr(_http_local, "session", None)
+    if session is None:
+        session = requests.Session()
+        _http_local.session = session
+    return session
+
+
 def _request_with_auth(method, url, **kwargs):
     kwargs.setdefault("timeout", SYNC_REQUEST_TIMEOUT)
     extra_headers = dict(kwargs.pop("headers", {}) or {})
     headers = dict(extra_headers)
     headers.update(_get_headers())
-    response = requests.request(method, url, headers=headers, **kwargs)
+    response = _http_session().request(method, url, headers=headers, **kwargs)
     if not _should_refresh_token(response):
         return response
 
@@ -135,7 +151,7 @@ def _request_with_auth(method, url, **kwargs):
     headers = dict(extra_headers)
     headers.update(HEADERS)
     headers["Authorization"] = f"Bearer {access}"
-    return requests.request(method, url, headers=headers, **kwargs)
+    return _http_session().request(method, url, headers=headers, **kwargs)
 
 
 def _should_refresh_token(response):
@@ -182,7 +198,7 @@ def _sheep_parents_ready_for_sync(sheep, pending_ids: set[int]) -> bool:
 
 def _iter_upload_batches(session: Session, model, objects):
     if model is not Sheep:
-        yield from _iter_chunks(objects, SYNC_BATCH_SIZE)
+        yield from _iter_chunks(objects, SYNC_UPLOAD_BATCH_SIZE)
         return
 
     pending = list(objects)
@@ -192,7 +208,7 @@ def _iter_upload_batches(session: Session, model, objects):
         if not ready:
             break
 
-        for chunk in _iter_chunks(ready, SYNC_BATCH_SIZE):
+        for chunk in _iter_chunks(ready, SYNC_UPLOAD_BATCH_SIZE):
             yield chunk
         ready_ids = {obj.id for obj in ready}
         pending = [obj for obj in pending if obj.id not in ready_ids]

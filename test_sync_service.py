@@ -35,10 +35,11 @@ class SyncServiceTests(unittest.TestCase):
         response = FakeResponse(payload=[])
         with (
             patch.object(sync_module, "load_tokens", return_value={"access": "token"}),
-            patch.object(sync_module.requests, "request", return_value=response) as request,
+            patch.object(sync_module, "_http_session", return_value=MagicMock(request=MagicMock(return_value=response))) as http,
         ):
             sync_module._request_with_auth("GET", "https://example.test/sync")
 
+        request = http.return_value.request
         self.assertEqual(request.call_args.kwargs["timeout"], sync_module.SYNC_REQUEST_TIMEOUT)
 
     def test_missing_upload_ack_keeps_record_unsynced(self):
@@ -260,7 +261,7 @@ class SyncServiceTests(unittest.TestCase):
         with (
             patch.object(sync_module, "load_tokens", return_value={"access": "old-token"}),
             patch.object(sync_module, "refresh_access_token", return_value="new-token"),
-            patch.object(sync_module.requests, "request", request),
+            patch.object(sync_module, "_http_session", return_value=MagicMock(request=request)),
         ):
             response = sync_module._request_with_auth(
                 "GET",
@@ -305,6 +306,16 @@ class SyncServiceTests(unittest.TestCase):
         child = self.session.query(Sheep).filter_by(remote_id=1).one()
         self.assertTrue(result)
         self.assertEqual([parent.remote_id for parent in child.parents], [2])
+
+    def test_http_session_is_reused_within_a_thread(self):
+        self.assertIs(sync_module._http_session(), sync_module._http_session())
+
+    def test_upload_uses_smaller_batches_than_download(self):
+        self.assertEqual(sync_module.SYNC_BATCH_SIZE, 500)
+        self.assertEqual(sync_module.SYNC_UPLOAD_BATCH_SIZE, 100)
+        colors = [Color(id=index, name=f"c{index}") for index in range(1, 251)]
+        chunks = list(sync_module._iter_upload_batches(self.session, Color, colors))
+        self.assertEqual([len(chunk) for chunk in chunks], [100, 100, 50])
 
     def _download_sheep(self, items):
         response = FakeResponse(payload={"results": items, "next": None, "count": len(items)})
