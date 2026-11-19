@@ -319,7 +319,9 @@ def _ensure_local_indexes(engine):
 def init_db(path=None):
     if path is None:
         path = ensure_db_path()
-    engine = create_engine(f"sqlite:///{path}")
+    # Синхронизация идёт в фоне и пишет короткими порциями; окна при сохранении
+    # подождут её до 30 с вместо стандартных 5 с и «database is locked».
+    engine = create_engine(f"sqlite:///{path}", connect_args={"timeout": 30})
     Base.metadata.create_all(engine)
     _ensure_local_columns(engine)
     _ensure_local_indexes(engine)

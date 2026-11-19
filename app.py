@@ -1,5 +1,5 @@
 import sys
-from PyQt5.QtWidgets import QApplication
+from PyQt5.QtWidgets import QApplication, QMessageBox
 from PyQt5.QtCore import QTimer
 from PyQt5.QtGui import QIcon
 from auth_state import AuthState
@@ -11,6 +11,8 @@ from services.auth_service import load_user, restore_authenticated_session
 from services.db_service import get_db
 from services.desktop_integration import ensure_linux_desktop_entry
 from services.guest_records_service import claim_guest_records
+from services.single_instance import acquire_instance_lock
+from services.sync_controller import SyncController
 from update_ui import UpdateController
 
 
@@ -23,6 +25,15 @@ def main():
     icon_path = resource_path("assets", icon_file)
     if icon_path:
         app.setWindowIcon(QIcon(icon_path))
+    instance_lock = acquire_instance_lock()
+    if instance_lock is None:
+        QMessageBox.information(
+            None,
+            "Арашан",
+            "Приложение уже открыто.\n"
+            "Найдите его окно на панели задач (оно может быть свёрнуто).",
+        )
+        return
     token_refresh_url = build_api_url("/api/token/refresh/")
     me_url = build_api_url("/api/users/me/")
     w = None
@@ -44,8 +55,11 @@ def main():
 
     if w is None:
         w = MainMenu()
+    sync_controller = SyncController.instance()
     w.show()
     ensure_linux_desktop_entry()
+    # фоновая синхронизация: вскоре после запуска и дальше по таймеру
+    sync_controller.start_auto()
     w.update_controller = UpdateController(w)
     QTimer.singleShot(2000, lambda: w.update_controller.check(silent=True))
     if claimed["sheep_count"] or claimed["application_count"]:
@@ -53,7 +67,9 @@ def main():
             f"Подтверждено локальных записей: овцы {claimed['sheep_count']}, бонитировки {claimed['application_count']}",
             8000,
         )
-    sys.exit(app.exec_())
+    code = app.exec_()
+    instance_lock.unlock()
+    sys.exit(code)
 
 
 if __name__ == "__main__":
