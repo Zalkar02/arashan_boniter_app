@@ -1,6 +1,6 @@
 from sqlalchemy import (
     Column, Integer, String, Date, Boolean, ForeignKey,
-    Float, DateTime, Numeric, Text, Table, create_engine, text
+    Float, DateTime, Numeric, Text, Table, create_engine, event, text
 )
 from sqlalchemy.orm import declarative_base, relationship, sessionmaker
 import datetime
@@ -206,6 +206,31 @@ class Photo(Base):
     updated_at = Column(DateTime, default=utcnow_naive)
 
 
+def _norm_name(value):
+    from services.owner_search_service import _norm
+    return _norm(value or "")
+
+
+@event.listens_for(User, "before_insert")
+@event.listens_for(User, "before_update")
+def _fill_user_name_norm(mapper, connection, target):
+    # name_norm нужен для поиска кириллицей: SQLite не умеет регистронезависимо
+    # сравнивать не-ASCII. Хозяйства из синхронизации приходят без него.
+    target.name_norm = _norm_name(target.name)
+
+
+def _backfill_name_norm(engine):
+    with engine.begin() as conn:
+        rows = conn.execute(text("SELECT id, name, name_norm FROM users")).all()
+        for user_id, name, name_norm in rows:
+            expected = _norm_name(name)
+            if name_norm != expected:
+                conn.execute(
+                    text("UPDATE users SET name_norm = :norm WHERE id = :id"),
+                    {"norm": expected, "id": user_id},
+                )
+
+
 def _get_columns(conn, table_name):
     result = conn.execute(text(f"PRAGMA table_info({table_name})"))
     return {row[1] for row in result}
@@ -298,4 +323,5 @@ def init_db(path=None):
     Base.metadata.create_all(engine)
     _ensure_local_columns(engine)
     _ensure_local_indexes(engine)
+    _backfill_name_norm(engine)
     return sessionmaker(bind=engine)()

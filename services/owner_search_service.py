@@ -108,7 +108,9 @@ def find_owners_page(session, user_model, raw_query: str, offset: int, limit: in
     query = session.query(user_model).filter_by(is_deleted=False)
 
     has_non_ascii = any(ord(ch) > 127 for ch in query_text)
-    if query_text and not has_non_ascii:
+    # «0555 12 34» должен находить «0555-12-34-56»: телефон сравниваем по цифрам
+    phone_like = bool(re.fullmatch(r"[\d\s+\-()]+", query_text)) and len(_digits(query_text)) >= 3
+    if query_text and not has_non_ascii and not phone_like:
         like = f"%{query_text}%"
         query = query.filter(
             or_(
@@ -131,34 +133,31 @@ def find_owners_page(session, user_model, raw_query: str, offset: int, limit: in
         )
         return rows, total
 
-    # Cyrillic-safe fallback: filter in Python using casefolded strings
-    if query_text and has_non_ascii:
-        norm = _norm(query_text)
-        query = query.filter(user_model.name_norm.like(f"%{norm}%"))
+    # Кириллица и телефон: SQLite не умеет регистронезависимый LIKE для не-ASCII,
+    # поэтому фильтруем в Python по всем полям хозяйства и по цифрам телефона.
     rows = query.order_by(user_model.name.asc(), user_model.id.desc()).all()
     if not query_text:
         total = len(rows)
         return rows[max(0, int(offset)): max(0, int(offset)) + max(1, int(limit))], total
 
-    query_norm = _norm(query_text)
+    words = _norm(query_text).split()
     query_digits = _digits(query_text)
     filtered = []
     for owner in rows:
-        haystack = " ".join(
+        haystack_norm = _norm(" ".join(
             [
                 str(owner.name or ""),
                 str(owner.username or ""),
                 str(owner.phone or ""),
-                str(owner.region or ""),
-                str(owner.area or ""),
+                _display_region(owner.region),
+                _display_area(owner.area),
                 str(owner.city or ""),
                 str(owner.home or ""),
             ]
-        )
-        haystack_norm = _norm(haystack)
-        name_ok = query_norm in haystack_norm
+        ))
+        words_ok = all(word in haystack_norm for word in words)
         phone_ok = bool(query_digits and query_digits in _digits(owner.phone))
-        if name_ok or phone_ok:
+        if words_ok or phone_ok:
             filtered.append(owner)
 
     total = len(filtered)
