@@ -60,3 +60,18 @@ def test_phone_and_latin(tmp_path):
     assert _ids(session, "0555 12 34") == {1}
     assert _ids(session, "0700") == {2}
     assert _ids(session, "asan") == {3}
+
+
+def test_update_owner_keeps_password_when_not_changed(tmp_path):
+    from services.owner_service import update_owner
+    session = _session(tmp_path)
+    owner = session.get(User, 1)
+    owner.password = None  # после синхронизации пароль локально стёрт
+    session.commit()
+    payload = {"username": "u1", "password": "", "name": "Каратаев Раимжан", "phone": "1",
+               "region": "C", "area": "39", "city": "Новое село", "home": ""}
+    update_owner(session, owner, payload)
+    assert owner.password is None
+    assert owner.city == "Новое село"
+    update_owner(session, owner, {**payload, "password": "new-secret"})
+    assert owner.password == "new-secret"

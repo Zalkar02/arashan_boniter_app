@@ -14,14 +14,37 @@ def get_owner_rows(
     query_text = (query_text or "").strip()
     region = (region or "").strip()
 
-    owner_link_counts = (
+    # Считаем только текущих овец: Sheep.owner_id, а если он пуст — действующая
+    # запись владения (owner_bool). Старые записи владения после передачи не в счёт.
+    direct_counts = (
+        session.query(
+            sheep_model.owner_id.label("owner_id"),
+            func.count(sheep_model.id).label("sheep_count"),
+        )
+        .filter(sheep_model.is_deleted == False, sheep_model.owner_id.isnot(None))
+        .group_by(sheep_model.owner_id)
+    )
+    fallback_counts = (
         session.query(
             owner_model.owner_id.label("owner_id"),
-            func.count(func.distinct(owner_model.sheep_id)).label("sheep_count"),
+            func.count(func.distinct(sheep_model.id)).label("sheep_count"),
         )
         .join(sheep_model, sheep_model.id == owner_model.sheep_id)
-        .filter(sheep_model.is_deleted == False)
+        .filter(
+            sheep_model.is_deleted == False,
+            sheep_model.owner_id.is_(None),
+            owner_model.owner_bool == True,
+            or_(owner_model.is_deleted == False, owner_model.is_deleted.is_(None)),
+        )
         .group_by(owner_model.owner_id)
+    )
+    all_counts = direct_counts.union_all(fallback_counts).subquery()
+    owner_link_counts = (
+        session.query(
+            all_counts.c.owner_id.label("owner_id"),
+            func.sum(all_counts.c.sheep_count).label("sheep_count"),
+        )
+        .group_by(all_counts.c.owner_id)
         .subquery()
     )
 

@@ -146,7 +146,20 @@ class OwnerCreateDialog(QDialog):
 
         # Поля
         self.ed_username = QLineEdit(); form.addRow("Логин", self.ed_username)
-        self.ed_password = QLineEdit(); form.addRow("Пароль", self.ed_password)
+        self.ed_password = QLineEdit()
+        self._change_password = self.owner is None
+        if self.owner is None:
+            form.addRow("Пароль", self.ed_password)
+        else:
+            # При редактировании пароль не трогаем, пока его явно не захотят сменить
+            password_row = QHBoxLayout()
+            self.ed_password.setPlaceholderText("Новый пароль, не короче 6 символов")
+            self.ed_password.setVisible(False)
+            self.btn_change_password = QPushButton("Сменить пароль")
+            self.btn_change_password.clicked.connect(self._toggle_password_change)
+            password_row.addWidget(self.ed_password, 1)
+            password_row.addWidget(self.btn_change_password)
+            form.addRow("Пароль", password_row)
         self.ed_name = QLineEdit(); form.addRow("ФИО", self.ed_name)
         self.ed_phone = QLineEdit(); form.addRow("Телефон", self.ed_phone)
 
@@ -193,7 +206,8 @@ class OwnerCreateDialog(QDialog):
         payload = {
             "created_by_user_id": (AuthState.user or {}).get("id"),
             "username": self.ed_username.text().strip(),
-            "password": self.ed_password.text().strip(),   # ⚠️ пока в чистом виде; для реального проекта нужно хэшировать!
+            # пустой пароль при редактировании = оставить прежний
+            "password": self.ed_password.text().strip() if self._change_password else "",
             "name": self.ed_name.text().strip(),
             "phone": self.ed_phone.text().strip(),
             "region": self.cb_region.currentData(),
@@ -216,7 +230,6 @@ class OwnerCreateDialog(QDialog):
 
     def _fill_owner_data(self):
         self.ed_username.setText(self.owner.username or "")
-        self.ed_password.setText(self.owner.password or "")
         self.ed_name.setText(self.owner.name or "")
         self.ed_phone.setText(self.owner.phone or "")
         self.ed_city.setText(self.owner.city or "")
@@ -276,7 +289,17 @@ class OwnerCreateDialog(QDialog):
             return False
         return True
 
+    def _toggle_password_change(self):
+        self._change_password = not self._change_password
+        self.ed_password.clear()
+        self.ed_password.setVisible(self._change_password)
+        self.btn_change_password.setText("Не менять" if self._change_password else "Сменить пароль")
+        if self._change_password:
+            self.ed_password.setFocus()
+
     def _validate_password(self) -> bool:
+        if not self._change_password:
+            return True
         password = self.ed_password.text()
         if not password or len(password) < 6:
             QMessageBox.warning(self, "Ошибка", "Пароль должен быть не короче 6 символов")

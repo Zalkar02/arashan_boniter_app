@@ -26,7 +26,10 @@ def create_owner(session, payload: dict):
 
 def update_owner(session, owner, payload: dict):
     owner.username = payload["username"]
-    owner.password = payload["password"]
+    # Пароль меняется только если его явно задали. После синхронизации локальный
+    # пароль стёрт, и сервер оставит прежний, если поле не отправлять.
+    if payload.get("password"):
+        owner.password = payload["password"]
     owner.name = payload["name"]
     owner.name_norm = _norm(payload.get("name") or "")
     owner.phone = payload.get("phone")
