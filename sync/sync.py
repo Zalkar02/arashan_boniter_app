@@ -696,13 +696,23 @@ def sync_reference_data(session: Session, progress_cb=None, should_stop=None):
 
     # Older databases stored the server boniter ID directly in FK columns even
     # though no local Boniter rows existed. Convert those dangling values now.
+    # Берём только записи с «висящей» ссылкой: раньше здесь перебирались все
+    # овцы и бонитировки с запросом на каждую (~2 с на каждую синхронизацию).
+    local_by_remote = {
+        remote_id: local_id
+        for local_id, remote_id in session.query(Boniter.id, Boniter.remote_id)
+        if remote_id is not None
+    }
+    local_ids = session.query(Boniter.id)
     for model in (Sheep, Application):
-        for obj in session.query(model).filter(model.boniter.isnot(None)).all():
-            if session.query(Boniter).filter_by(id=obj.boniter).first() is not None:
-                continue
-            related = session.query(Boniter).filter_by(remote_id=obj.boniter).first()
-            if related is not None:
-                obj.boniter = related.id
+        dangling = session.query(model).filter(
+            model.boniter.isnot(None),
+            ~model.boniter.in_(local_ids),
+        ).all()
+        for obj in dangling:
+            local_id = local_by_remote.get(obj.boniter)
+            if local_id is not None:
+                obj.boniter = local_id
     session.commit()
     return True
 

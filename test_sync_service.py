@@ -153,6 +153,22 @@ class SyncServiceTests(unittest.TestCase):
         self.assertEqual(sheep.boniter, boniter.id)
         self.assertEqual(application.boniter, boniter.id)
 
+    def test_reference_sync_keeps_valid_local_boniter_links(self):
+        # локальный id одного бонитёра совпадает с remote_id другого:
+        # верная ссылка не должна переписываться
+        first = Boniter(id=1, remote_id=5, name="A")
+        second = Boniter(id=2, remote_id=1, name="B")
+        sheep = Sheep(id_n="valid-boniter", boniter=1, synced=True)
+        self.session.add_all([first, second, sheep])
+        self.session.commit()
+
+        empty = FakeResponse(payload={"results": [], "next": None, "count": 0})
+        with patch.object(sync_module, "_request_with_auth", side_effect=[empty, empty]):
+            sync_module.sync_reference_data(self.session)
+
+        self.session.refresh(sheep)
+        self.assertEqual(sheep.boniter, 1)
+
     def test_blocked_dependency_is_skipped_and_sync_continues(self):
         sheep = Sheep(id_n="missing-boniter", boniter=99, synced=False)
         self.session.add(sheep)
