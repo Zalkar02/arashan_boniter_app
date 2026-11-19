@@ -1,6 +1,5 @@
 import datetime
-from sqlalchemy import or_
-from services.owner_search_service import _norm
+from services.owner_search_service import _norm, _digits, _display_region, _display_area
 
 
 RECENT_DAYS = 30
@@ -63,115 +62,138 @@ def _resolve_sheep_owner(sheep, current_owner_map):
     return current_owner_map.get(getattr(sheep, "id", None))
 
 
-def get_owner_history_rows(session, application_model, sheep_model, owner_model, raw_query: str):
-    query = (raw_query or "").strip()
-    query_norm = _norm(query) if query else ""
+def build_owner_history_summary(session, application_model, sheep_model, owner_model, user_model):
+    """Сводка по всем хозяйствам. Только колоночные запросы, без ORM-объектов."""
     recent_since = datetime.date.today() - datetime.timedelta(days=RECENT_DAYS)
-    sheep_query = session.query(sheep_model).filter_by(is_deleted=False)
-    if query:
-        like = f"%{query}%"
-        sheep_query = sheep_query.filter(
-            or_(
-                sheep_model.id_n.ilike(like),
-                sheep_model.nick.ilike(like),
-            )
-    )
-    sheep_rows = sheep_query.order_by(sheep_model.date_filling.desc().nullslast(), sheep_model.id.desc()).all()
-    sheep_ids = [sheep.id for sheep in sheep_rows]
-    current_owner_map = _load_current_owner_map(session, owner_model, sheep_ids=sheep_ids)
-    applications = _load_rows_by_ids(
-        session,
-        application_model,
-        application_model.sheep_id,
-        sheep_ids,
-        application_model.is_deleted.is_(False),
-    )
-    app_by_sheep_id = {}
-    for application in applications:
-        if application.sheep_id is None:
-            continue
-        app_by_sheep_id.setdefault(application.sheep_id, []).append(application)
 
-    owners = {}
-    for sheep in sheep_rows:
-        owner = _resolve_sheep_owner(sheep, current_owner_map)
-        if owner is None:
+    users = {}
+    for uid, name, phone, city, area, region, is_deleted in session.query(
+        user_model.id, user_model.name, user_model.phone, user_model.city,
+        user_model.area, user_model.region, user_model.is_deleted,
+    ).all():
+        users[uid] = (name, phone, city, area, region, bool(is_deleted))
+
+    sheep_rows = session.query(
+        sheep_model.id, sheep_model.owner_id, sheep_model.date_filling,
+    ).filter(sheep_model.is_deleted.is_(False)).all()
+
+    current_owner = {}
+    owner_rows = session.query(
+        owner_model.sheep_id, owner_model.owner_id,
+    ).order_by(
+        owner_model.owner_bool.desc(),
+        owner_model.date1.desc().nullslast(),
+        owner_model.id.desc(),
+    ).all()
+    for sheep_id, uid in owner_rows:
+        if sheep_id is None or sheep_id in current_owner:
+            continue
+        user = users.get(uid)
+        if user is None or user[5]:
+            continue
+        current_owner[sheep_id] = uid
+
+    latest_app = {}
+    for sheep_id, app_date, app_id, is_paid in session.query(
+        application_model.sheep_id, application_model.date,
+        application_model.id, application_model.is_paid,
+    ).filter(application_model.is_deleted.is_(False)).all():
+        if sheep_id is None:
+            continue
+        key = (app_date or datetime.date.min, app_id or 0)
+        prev = latest_app.get(sheep_id)
+        if prev is None or key > prev[0]:
+            latest_app[sheep_id] = (key, app_date, bool(is_paid))
+
+    buckets = {}
+    for sheep_id, direct_owner_id, sheep_date in sheep_rows:
+        if direct_owner_id is not None and direct_owner_id in users:
+            owner_id = direct_owner_id
+        else:
+            owner_id = current_owner.get(sheep_id)
+        if owner_id is None or users[owner_id][5]:
             continue
 
-        owner_id = getattr(owner, "id", None)
-        if owner_id is None or bool(getattr(owner, "is_deleted", False)):
-            continue
+        latest = latest_app.get(sheep_id)
+        app_date = latest[1] if latest else None
+        activity = sheep_date
+        if app_date and (sheep_date is None or app_date > sheep_date):
+            activity = app_date
 
-        owner_apps = app_by_sheep_id.get(sheep.id, [])
-        latest_application = _get_latest_application(owner_apps)
-        bucket = owners.setdefault(
-            owner_id,
-            {
-                "owner": owner,
+        bucket = buckets.get(owner_id)
+        if bucket is None:
+            name, phone, city, area, region, _ = users[owner_id]
+            name = str(name or "")
+            phone = str(phone or "")
+            city = str(city or "")
+            area = str(area or "")
+            region = str(region or "")
+            bucket = buckets[owner_id] = {
+                "owner_id": owner_id,
+                "name": name,
+                "phone": phone,
+                "location": city or area or region,
                 "total_sheep": 0,
                 "sheep_with_applications": 0,
                 "sheep_without_applications": 0,
                 "recent_sheep": 0,
                 "unpaid_sheep": 0,
                 "latest_activity": None,
-            },
-        )
+                "search_text": _norm(" ".join([
+                    name, phone, city, area, region,
+                    _display_region(region), _display_area(area),
+                ])),
+                "search_digits": _digits(phone),
+            }
 
         bucket["total_sheep"] += 1
-        if owner_apps:
+        if latest is not None:
             bucket["sheep_with_applications"] += 1
+            if not latest[2]:
+                bucket["unpaid_sheep"] += 1
         else:
             bucket["sheep_without_applications"] += 1
-
-        effective_recent_date = _get_row_activity_date(sheep, latest_application)
-        if effective_recent_date and effective_recent_date >= recent_since:
+        if activity and activity >= recent_since:
             bucket["recent_sheep"] += 1
+        if activity and (bucket["latest_activity"] is None or activity > bucket["latest_activity"]):
+            bucket["latest_activity"] = activity
 
-        if latest_application is not None and not bool(getattr(latest_application, "is_paid", False)):
-            bucket["unpaid_sheep"] += 1
-
-        latest_activity = bucket["latest_activity"]
-        if effective_recent_date and (latest_activity is None or effective_recent_date > latest_activity):
-            bucket["latest_activity"] = effective_recent_date
-
-    filtered = []
-    for bucket in owners.values():
-        owner = bucket["owner"]
-        haystack = " ".join(
-            [
-                str(getattr(owner, "name", "") or ""),
-                str(getattr(owner, "phone", "") or ""),
-                str(getattr(owner, "city", "") or ""),
-                str(getattr(owner, "area", "") or ""),
-                str(getattr(owner, "region", "") or ""),
-            ]
-        )
-        haystack_norm = _norm(haystack)
-        if query and query_norm not in haystack_norm:
-            continue
-        filtered.append(bucket)
-
-    filtered.sort(
-        key=lambda row: (
-            row["latest_activity"] or datetime.date.min,
-            row["owner"].id or 0,
-        ),
+    return sorted(
+        buckets.values(),
+        key=lambda row: (row["latest_activity"] or datetime.date.min, row["owner_id"] or 0),
         reverse=True,
     )
-    return filtered
+
+
+def filter_owner_history(rows, raw_query: str):
+    query = (raw_query or "").strip()
+    if not query:
+        return list(rows)
+    words = _norm(query).split()
+    query_digits = _digits(query)
+    use_digits = len(query_digits) >= 3
+    result = []
+    for row in rows:
+        text = row["search_text"]
+        if words and all(word in text for word in words):
+            result.append(row)
+        elif use_digits and query_digits in row["search_digits"]:
+            result.append(row)
+    return result
+
+
+def get_owner_history_rows(session, application_model, sheep_model, owner_model, raw_query: str, user_model=None):
+    if user_model is None:
+        user_model = owner_model.owner.property.mapper.class_
+    rows = build_owner_history_summary(session, application_model, sheep_model, owner_model, user_model)
+    return filter_owner_history(rows, raw_query)
 
 
 def format_owner_history_row(row: dict):
-    owner = row["owner"]
-    location = (
-        str(getattr(owner, "city", "") or "")
-        or str(getattr(owner, "area", "") or "")
-        or str(getattr(owner, "region", "") or "")
-    )
     return [
-        str(getattr(owner, "name", "") or ""),
-        str(getattr(owner, "phone", "") or ""),
-        location,
+        row["name"],
+        row["phone"],
+        row["location"],
         str(row["total_sheep"]),
         str(row["sheep_with_applications"]),
         str(row["sheep_without_applications"]),
