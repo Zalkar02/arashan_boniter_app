@@ -11,7 +11,7 @@ from services.auth_service import load_user, restore_authenticated_session
 from services.db_service import get_db
 from services.desktop_integration import ensure_linux_desktop_entry
 from services.guest_records_service import claim_guest_records
-from services.single_instance import acquire_instance_lock
+from services.single_instance import acquire_instance_lock, request_activation, start_activation_server
 from services.sync_controller import SyncController
 from update_ui import UpdateController
 
@@ -27,13 +27,18 @@ def main():
         app.setWindowIcon(QIcon(icon_path))
     instance_lock = acquire_instance_lock()
     if instance_lock is None:
+        # Уже открытая копия покажет своё окно; эта тихо закрывается.
+        if request_activation():
+            return
         QMessageBox.information(
             None,
             "Арашан",
-            "Приложение уже открыто.\n"
-            "Найдите его окно на панели задач (оно может быть свёрнуто).",
+            "Приложение ещё закрывается или не отвечает.\n"
+            "Подождите несколько секунд и откройте снова. Если не поможет, "
+            "завершите ArashanBoniter в диспетчере задач.",
         )
         return
+    activation_server = start_activation_server(parent=app)
     token_refresh_url = build_api_url("/api/token/refresh/")
     me_url = build_api_url("/api/users/me/")
     w = None
