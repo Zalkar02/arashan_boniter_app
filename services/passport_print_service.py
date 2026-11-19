@@ -801,8 +801,34 @@ def generate_passports_pdf(session, rows: Iterable[dict], owner=None):
     return output_path
 
 
+def _hidden_console_kwargs():
+    """В Windows не показывать чёрное окно консоли у запускаемых программ."""
+    if os.name == "nt":
+        return {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0)}
+    return {}
+
+
+def _list_printers_qt():
+    """Список принтеров через Qt: берётся у системы напрямую, без запуска программ."""
+    try:
+        from PyQt5.QtPrintSupport import QPrinterInfo
+    except Exception:
+        return None
+    printers = []
+    for name in QPrinterInfo.availablePrinterNames():
+        name = str(name).strip()
+        if name and name not in printers:
+            printers.append(name)
+    return printers
+
+
 def list_system_printers():
     if os.name == "nt":
+        # PowerShell стартует секунды и показывает окно консоли, поэтому
+        # сначала спрашиваем Qt, а PowerShell остаётся запасным вариантом.
+        printers = _list_printers_qt()
+        if printers is not None:
+            return printers
         powershell = shutil.which("powershell") or shutil.which("pwsh")
         if powershell is None:
             return []
@@ -810,6 +836,7 @@ def list_system_printers():
             [powershell, "-NoProfile", "-Command", "Get-Printer | Select-Object -ExpandProperty Name"],
             capture_output=True,
             text=True,
+            **_hidden_console_kwargs(),
         )
         if result.returncode != 0:
             return []
@@ -1043,7 +1070,10 @@ def _print_pdf_windows_with_tool(pdf_path: str, printer_name: str | None = None)
             else:
                 continue
 
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=60, check=False)
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=60, check=False,
+                **_hidden_console_kwargs(),
+            )
             if result.returncode == 0:
                 tool_label = os.path.basename(tool_path)
                 if printer_name:

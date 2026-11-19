@@ -3,7 +3,8 @@
 from PyInstaller.utils.hooks import collect_submodules
 
 
-hiddenimports = collect_submodules("reportlab")
+# QtPrintSupport — список принтеров в Windows без PowerShell
+hiddenimports = collect_submodules("reportlab") + ["PyQt5.QtPrintSupport"]
 
 datas = [
     ("styles/light_theme.qss", "styles"),
