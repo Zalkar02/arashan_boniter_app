@@ -199,9 +199,12 @@ def apply_update(path: str):
         raise UpdateError(f"Не удалось заменить файл приложения {target}: {exc}") from exc
     _remove_quietly(path)
     # Небольшая пауза, чтобы старый процесс успел завершиться.
+    child_env = _clean_child_env()
+    # новая копия подождёт, пока старая закроется и отпустит блокировку
+    child_env["ARASHAN_WAIT_FOR_PREVIOUS_INSTANCE"] = "1"
     subprocess.Popen(
         ["sh", "-c", 'sleep 1; exec "$0"', target],
-        env=_clean_child_env(),
+        env=child_env,
         start_new_session=True,
         close_fds=True,
     )

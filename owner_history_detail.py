@@ -32,7 +32,7 @@ from services.passport_print_service import (
 )
 from services.payment_service import create_payment, refresh_payment_statuses
 from services.sheep_service import soft_delete_sheep_record
-from services.sync_worker import SyncWorker
+from services.sync_controller import SyncController
 
 try:
     from db.models import Application, Sheep, User, Owner
@@ -538,7 +538,14 @@ class OwnerHistoryDetailWindow(QMainWindow):
         if self.sync_worker is not None and self.sync_worker.isRunning():
             return
 
-        self.sync_worker = SyncWorker(self, owner_id=self.owner_id)
+        self.sync_worker = SyncController.instance().create_worker(owner_id=self.owner_id)
+        if self.sync_worker is None:
+            QMessageBox.information(
+                self,
+                "Синхронизация",
+                "Синхронизация уже идёт в фоне. Её состояние видно внизу окна.",
+            )
+            return
         self.sync_worker.finished_ok.connect(self._on_sync_finished)
         self.sync_worker.cancelled.connect(self._on_sync_cancelled)
         self.sync_worker.failed.connect(self._on_sync_failed)
@@ -789,6 +796,11 @@ class OwnerHistoryDetailWindow(QMainWindow):
         dlg.exec_()
 
     def go_back(self):
+        if self.sync_worker is not None and self.sync_worker.isRunning():
+            # иначе меню открывается, а синхронизация хозяйства идёт дальше,
+            # и вторая синхронизация из настроек падает с «database is locked»
+            QMessageBox.information(self, "Синхронизация", "Дождитесь завершения синхронизации.")
+            return
         prev = getattr(self, "prev", None)
         if prev is not None:
             prev.show()

@@ -4,6 +4,20 @@ from services.db_service import release_pending_changes
 from sync.sync import SyncCancelled, run_owner_sync, run_sync
 
 
+DATABASE_LOCKED_MESSAGE = (
+    "База данных занята другой операцией: идёт другая синхронизация "
+    "или приложение открыто второй раз.\n"
+    "Дождитесь её окончания или закройте лишнее окно Арашан и повторите."
+)
+
+
+def describe_sync_error(exc):
+    text = str(exc)
+    if "database is locked" in text:
+        return DATABASE_LOCKED_MESSAGE
+    return text
+
+
 class SyncWorker(QThread):
     finished_ok = pyqtSignal()
     cancelled = pyqtSignal()
@@ -42,6 +56,6 @@ class SyncWorker(QThread):
             self.cancelled.emit()
             return
         except Exception as exc:
-            self.failed.emit(str(exc))
+            self.failed.emit(describe_sync_error(exc))
             return
         self.finished_ok.emit()
