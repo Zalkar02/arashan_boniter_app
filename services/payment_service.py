@@ -1,3 +1,5 @@
+import functools
+
 import requests
 
 from api_config import build_api_url
@@ -8,6 +10,23 @@ CREATE_PAYMENT_URL = build_api_url("/api/payments/mkassa/dynamic-qr/")
 TOKEN_REFRESH_URL = build_api_url("/api/token/refresh/")
 CHECK_BY_ITEMS_STATUS_URL = build_api_url("/api/payments/mkassa/statuses/by-items/")
 ALREADY_PAID_MARKER = "уже оплачен"
+
+
+def _rollback_on_error(func):
+    """Откатить незаписанные изменения, если оплата упала на полпути.
+
+    Сессия окон общая: без отката следующее обновление окна сделает autoflush,
+    откроет запись и будет держать базу, а синхронизация упадёт с
+    «database is locked».
+    """
+    @functools.wraps(func)
+    def wrapper(session, *args, **kwargs):
+        try:
+            return func(session, *args, **kwargs)
+        except Exception:
+            session.rollback()
+            raise
+    return wrapper
 
 
 def _get_headers():
@@ -93,6 +112,7 @@ def _already_paid_result(status_summary=None):
     }
 
 
+@_rollback_on_error
 def create_payment(session, selected_rows):
     # Reconcile local flags first. This prevents creating a second payment when
     # another device has already completed it.
@@ -147,6 +167,7 @@ def create_payment(session, selected_rows):
     return payload
 
 
+@_rollback_on_error
 def refresh_payment_statuses(session, selected_rows):
     references = {}
     rows_without_reference = []

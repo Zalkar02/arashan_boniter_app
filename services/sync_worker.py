@@ -1,5 +1,6 @@
 from PyQt5.QtCore import QThread, pyqtSignal
 
+from services.db_service import release_pending_changes
 from sync.sync import SyncCancelled, run_owner_sync, run_sync
 
 
@@ -13,6 +14,11 @@ class SyncWorker(QThread):
         super().__init__(parent)
         self.owner_id = owner_id
         self._stop_requested = False
+
+    def start(self, *args, **kwargs):
+        # выполняется в потоке окна, где живёт общая сессия
+        release_pending_changes()
+        super().start(*args, **kwargs)
 
     def stop(self):
         self._stop_requested = True
